@@ -1,0 +1,152 @@
+import { AlertCircle, CheckCircle2, Captions, Loader2, Plus } from "lucide-react";
+import type { Clip, ClipSource, Project } from "../../shared/types";
+import { cn, fmtTime } from "../lib/format";
+import { Badge, Button, Empty, ProgressBar } from "./ui";
+
+export type ClipSort = "time" | "score";
+
+interface Props {
+  project: Project;
+  clips: Clip[];
+  activeId: string | null;
+  sort: ClipSort;
+  onSortChange: (sort: ClipSort) => void;
+  onActivate: (id: string) => void;
+  onSelect: (id: string, selected: boolean) => void;
+  onSelectAll: (selected: boolean) => void;
+  onAdd: () => void;
+}
+
+const SOURCE_LABEL: Record<ClipSource, string> = { heuristic: "Heuristic", llm: "LLM", agent: "Agent", manual: "Manual" };
+
+export function sortClips(clips: Clip[], sort: ClipSort): Clip[] {
+  return [...clips].sort((a, b) => (sort === "time" ? a.start - b.start : b.score - a.score || a.start - b.start));
+}
+
+export function ClipList({ project, clips, activeId, sort, onSortChange, onActivate, onSelect, onSelectAll, onAdd }: Props) {
+  const sorted = sortClips(clips, sort);
+  const selectedCount = clips.filter((c) => c.selected).length;
+  const highlights = project.stages.highlights;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
+        <div role="group" aria-label="Sort clips" className="inline-flex rounded-md border border-zinc-700 p-0.5">
+          {(["time", "score"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={sort === s}
+              onClick={() => onSortChange(s)}
+              className={cn(
+                "h-6 rounded px-2 text-xs font-medium transition-colors",
+                sort === s ? "bg-zinc-100 text-zinc-900" : "text-zinc-300 hover:bg-zinc-800",
+              )}
+            >
+              {s === "time" ? "By time" : "By score"}
+            </button>
+          ))}
+        </div>
+        <span className="flex-1" />
+        <Button variant="ghost" small onClick={() => onSelectAll(true)} disabled={clips.length === 0 || selectedCount === clips.length}>
+          All
+        </Button>
+        <Button variant="ghost" small onClick={() => onSelectAll(false)} disabled={selectedCount === 0}>
+          None
+        </Button>
+        <Button variant="secondary" small onClick={onAdd} title="Add a 30 s clip at the playhead">
+          <Plus className="size-3.5" aria-hidden /> Add
+        </Button>
+      </div>
+
+      {sorted.length === 0 ? (
+        <Empty>
+          {highlights.status === "running" ? (
+            <span className="flex items-center gap-2">
+              <Loader2 className="size-4 animate-spin" aria-hidden /> Finding moments...
+            </span>
+          ) : highlights.status === "pending" ? (
+            "Clips appear here after the highlights stage."
+          ) : (
+            "No clips yet. Add one at the playhead, or find moments again."
+          )}
+        </Empty>
+      ) : (
+        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2" aria-label="Clips">
+          {sorted.map((clip) => (
+            <ClipCard
+              key={clip.id}
+              clip={clip}
+              active={clip.id === activeId}
+              onActivate={() => onActivate(clip.id)}
+              onSelect={(v) => onSelect(clip.id, v)}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: boolean; onActivate: () => void; onSelect: (v: boolean) => void }) {
+  const r = clip.render;
+  return (
+    <li
+      className={cn(
+        "relative rounded-lg border bg-zinc-900 transition-colors",
+        active ? "border-indigo-400 ring-1 ring-indigo-400/40" : "border-zinc-800 hover:border-zinc-600",
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={clip.selected}
+        onChange={(e) => onSelect(e.target.checked)}
+        aria-label={`Select "${clip.title}" for rendering`}
+        className="absolute top-3 left-2.5 size-4"
+      />
+      <button
+        type="button"
+        onClick={onActivate}
+        aria-current={active}
+        className="flex w-full flex-col gap-1.5 rounded-lg py-2.5 pr-3 pl-9 text-left"
+      >
+        <span className="line-clamp-2 text-sm leading-snug font-medium text-zinc-100">{clip.title || "Untitled clip"}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 tabular-nums">
+          <span className="text-zinc-200">
+            {fmtTime(clip.start)} - {fmtTime(clip.end)}
+          </span>
+          <span>{(clip.end - clip.start).toFixed(0)}s</span>
+          <Badge tone={clip.score >= 80 ? "good" : clip.score >= 60 ? "info" : "neutral"} title="Highlight score">
+            {Math.round(clip.score)}
+          </Badge>
+          <Badge tone={clip.source === "manual" ? "warn" : "neutral"}>{SOURCE_LABEL[clip.source]}</Badge>
+        </span>
+        <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
+          <Badge>{clip.settings.layout}</Badge>
+          <span className="inline-flex items-center gap-1" title={clip.settings.subtitles ? `Captions: ${clip.settings.captionStyle}` : "No captions"}>
+            <Captions className={cn("size-3.5", clip.settings.subtitles ? "text-indigo-300" : "text-zinc-600")} aria-hidden />
+            {clip.settings.subtitles ? clip.settings.captionStyle : "off"}
+          </span>
+        </span>
+        {clip.reason && <span className="line-clamp-2 text-xs leading-snug text-zinc-400">{clip.reason}</span>}
+        {(r.status === "queued" || r.status === "rendering") && (
+          <span className="flex items-center gap-2 text-xs text-indigo-300">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            {r.status === "queued" ? "Queued" : `Rendering ${Math.round(r.progress * 100)}%`}
+            <ProgressBar value={r.status === "queued" ? 0 : r.progress} className="flex-1" label="Render progress" />
+          </span>
+        )}
+        {r.status === "done" && (
+          <span className="flex items-center gap-1.5 text-xs text-emerald-400">
+            <CheckCircle2 className="size-3.5" aria-hidden /> Rendered
+          </span>
+        )}
+        {r.status === "error" && (
+          <span className="flex items-start gap-1.5 text-xs text-red-300">
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> <span className="min-w-0 [overflow-wrap:anywhere]">Render failed: {r.error ?? "unknown error"}</span>
+          </span>
+        )}
+      </button>
+    </li>
+  );
+}
