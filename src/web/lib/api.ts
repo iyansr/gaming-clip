@@ -1,5 +1,6 @@
 import type {
   ClipSettings,
+  ClipThumbnail,
   Project,
   ProjectOptions,
   Rect,
@@ -25,6 +26,13 @@ export interface ClipPatch {
   title?: string;
   selected?: boolean;
   settings?: Partial<ClipSettings>;
+  thumbnail?: Partial<Pick<ClipThumbnail, "time" | "text" | "style" | "textY">>;
+}
+
+/** A suggested cover frame inside a clip; `score` is 0..1. */
+export interface ThumbnailCandidate {
+  time: number;
+  score: number;
 }
 
 export class ApiError extends Error {
@@ -87,15 +95,50 @@ export const api = {
     request<Project>("PATCH", `${projectUrl(id)}/clips/${clipId}`, patch),
   deleteClip: (id: string, clipId: string) => request<Project>("DELETE", `${projectUrl(id)}/clips/${clipId}`),
   render: (id: string, clipIds?: string[]) => request<Project>("POST", `${projectUrl(id)}/render`, { clipIds }),
+  thumbnailCandidates: (id: string, clipId: string) =>
+    request<ThumbnailCandidate[]>("GET", `${projectUrl(id)}/clips/${clipId}/thumbnail/candidates`),
+  generateThumbnail: (id: string, clipId: string) => request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/thumbnail`, {}),
   cancelRender: (id: string) => request<Project>("POST", `${projectUrl(id)}/render/cancel`, {}),
 };
 
+export const ASSET_TYPES = ["image/png", "image/jpeg", "image/webp"];
+export const MAX_ASSET_BYTES = 15 * 1024 * 1024;
+
+/** Uploads a background image as raw bytes (fetch has no upload progress, XHR does). */
+export function uploadAsset(projectId: string, file: File, onProgress: (fraction: number) => void): Promise<{ file: string }> {
+  const { promise, resolve, reject } = Promise.withResolvers<{ file: string }>();
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", `${projectUrl(projectId)}/assets`);
+  xhr.setRequestHeader("Content-Type", file.type);
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) onProgress(e.loaded / e.total);
+  };
+  xhr.onerror = () => reject(new ApiError("Cannot reach the server. Is it still running?", 0));
+  xhr.onload = () => {
+    let data: unknown = null;
+    try {
+      data = JSON.parse(xhr.responseText);
+    } catch {
+      // not JSON: fall through to the status line
+    }
+    const body = typeof data === "object" && data !== null ? (data as { error?: unknown; file?: unknown }) : {};
+    if (xhr.status >= 200 && xhr.status < 300 && typeof body.file === "string") resolve({ file: body.file });
+    else reject(new ApiError(typeof body.error === "string" ? body.error : `${xhr.status} ${xhr.statusText}`, xhr.status));
+  };
+  xhr.send(file);
+  return promise;
+}
+
 export const media = {
   source: (id: string) => `/media/${id}/source`,
+  asset: (id: string, file: string) => `/media/${id}/assets/${encodeURIComponent(file)}`,
   thumbnail: (id: string) => `/media/${id}/thumbnail`,
   frame: (id: string, t: number, w: number) => `/media/${id}/frame?t=${t.toFixed(2)}&w=${w}`,
   clip: (id: string, file: string, download = false) =>
     `/media/${id}/clips/${encodeURIComponent(file)}${download ? "?download=1" : ""}`,
+  /** A regenerated thumbnail keeps its file name, so the generation time busts the browser cache. */
+  thumbnailFile: (id: string, file: string, version?: string) =>
+    `/media/${id}/clips/${encodeURIComponent(file)}${version ? `?v=${encodeURIComponent(version)}` : ""}`,
 };
 
 export function errorMessage(error: unknown): string {

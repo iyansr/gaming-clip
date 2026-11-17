@@ -7,10 +7,14 @@ import { formatTranscript } from "./core/highlights";
 import {
   addClip,
   clampFrameTime,
+  forgetThumbnailCandidates,
   formatClock,
+  generateThumbnail,
   parseOptions,
   parseRect,
   parseSettingsPatch,
+  parseThumbnailPatch,
+  patchClip,
   patchProject,
   removeClip,
   removeOutputs,
@@ -33,15 +37,17 @@ import {
   ValidationError,
 } from "./core/store";
 import { STAGE_ORDER, type Clip, type LoudnessEnvelope, type Project, type StageId, type Transcript } from "./shared/types";
+import { THUMBNAIL_STYLES } from "./shared/thumbnail";
 
 const USAGE = `Usage: bun run clip <command> [options]
 
   clip doctor                                  dependency table; exit 1 if anything is missing
   clip serve [--port N]                        start the web UI server
-  clip new <url|file>... [--lang auto] [--clips 8] [--min 20] [--max 60] [--no-highlights]
+  clip new <url|file>... [--lang auto] [--clips auto|N] [--min 20] [--max 60] [--no-highlights]
                                                create project(s) and run the pipeline to completion
-                                               (--json prints an array of projects)
-  clip rerun <id> [--from <stage>] [--clips N] [--min S] [--max S] [--no-highlights]
+                                               (--json prints an array of projects). --clips auto (the
+                                               default) lets the engine choose how many moments are worth posting
+  clip rerun <id> [--from <stage>] [--clips auto|N] [--min S] [--max S] [--no-highlights]
                                                run the pipeline again: without --from it resumes at the first
                                                unfinished stage (retry after a failure); stages: download,
                                                transcribe, highlights, webcam. Rerunning highlights replaces non-manual clips
@@ -55,10 +61,20 @@ const USAGE = `Usage: bun run clip <command> [options]
   clip clips rm <id> <clipId>
   clip clips select <id> <clipId,...|all|none>
   clip webcam <id> [--detect | --none | --rect x,y,w,h]
-  clip settings <id> [--clips a,b|all] [--layout split|fill|fit] [--subtitles on|off] [--style <id>]
-                     [--caption-y 0..1] [--focus-x 0..1]
-                                               without --clips: project defaults only; all = every clip AND the defaults
+  clip settings <id> [--clips a,b|all] [--layout split|fill|fit|custom] [--custom-json <file>] [--subtitles on|off]
+                     [--style <id>] [--caption-y 0..1] [--focus-x 0..1]
+                                               without --clips: project defaults only; all = every clip AND the defaults.
+                                               --layout custom starts from the split layout as free elements; --custom-json
+                                               sets the whole free-form layout (and --layout custom): {"background":
+                                               {"kind":"blur"} | {"kind":"color","color":"#1e1b4b"} | {"kind":"image","file":<uploaded name>},
+                                               "game": null | {"src":{x,y,w,h} (source px),"dst":{x,y,w,h} (1080x1920 px)},
+                                               "cam": null | {"src","dst","feather":0..300,"radius":0..960,"border":0..40,"borderColor":"#rrggbb"}}
   clip render <id> [--clips a,b|all]           default: selected clips; renders sequentially, prints the output files
+  clip thumbnail <id> [--clips a,b|all] [--time T|auto] [--text "..."] [--no-text] [--title-text]
+                     [--style <id>] [--text-y 0..1]
+                                               default: selected clips; makes their 1080x1920 cover images,
+                                               prints the files. --no-text = no headline, --title-text = use the
+                                               clip title, auto = pick the best frame. Styles: ${THUMBNAIL_STYLES.map((style) => style.id).join(", ")}
   clip rm <id>                                 delete the project and its files
 
 Times: seconds (83.5) or MM:SS(.s) / H:MM:SS(.s). --json prints machine-readable JSON on stdout (progress goes to stderr).
@@ -135,6 +151,11 @@ function parseNumber(text: string, flag: string): number {
   const value = Number(text);
   if (text.trim() === "" || !Number.isFinite(value)) throw new UsageError(`${flag} needs a number, got "${text}"`);
   return value;
+}
+
+function parseClipCount(text: string): number | null {
+  if (text.trim().toLowerCase() === "auto") return null;
+  return parseNumber(text, "--clips");
 }
 
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
@@ -254,7 +275,7 @@ function showProject(project: Project): void {
     `Project ${project.id}  ${source?.title ?? project.input}`,
     `  input:      ${project.input}`,
     `  source:     ${source ? `${source.width}x${source.height} ${source.fps}fps ${source.duration.toFixed(1)}s (${formatClock(source.duration)})` : "not downloaded"}`,
-    `  options:    language ${project.options.language}, ${project.options.clipCount} clips, ${project.options.minDuration}-${project.options.maxDuration}s`,
+    `  options:    language ${project.options.language}, clips ${project.options.clipCount ?? "auto"}, ${project.options.minDuration}-${project.options.maxDuration}s`,
     "  stages:",
     ...STAGE_ORDER.map((stage) => {
       const state = project.stages[stage];
@@ -273,7 +294,7 @@ function showProject(project: Project): void {
     return;
   }
   console.log("  clips:");
-  const rows = [["ID", "TIME", "LEN", "SCORE", "SEL", "SOURCE", "LAYOUT", "SUBS", "RENDER", "TITLE"]];
+  const rows = [["ID", "TIME", "LEN", "SCORE", "SEL", "SOURCE", "LAYOUT", "SUBS", "THUMB", "RENDER", "TITLE"]];
   for (const clip of project.clips) {
     rows.push([
       clip.id,
@@ -284,6 +305,7 @@ function showProject(project: Project): void {
       clip.source,
       `${clip.settings.layout}`,
       clip.settings.subtitles ? clip.settings.captionStyle : "off",
+      clip.thumbnail.file ?? "-",
       describeRender(clip, project.id),
       clip.title,
     ]);
@@ -302,15 +324,18 @@ function parseClipList(text: string | undefined, project: Project, fallback: "se
   return text.split(",").map((id) => id.trim()).filter(Boolean);
 }
 
-async function readPicks(path: string): Promise<ClipFields[]> {
+async function readJsonFile(path: string): Promise<unknown> {
   const file = Bun.file(path);
   if (!(await file.exists())) throw new Error(`File not found: ${path}`);
-  let raw: unknown;
   try {
-    raw = await file.json();
+    return await file.json();
   } catch (error) {
     throw new ValidationError(`${path} is not valid JSON: ${(error as Error).message}`);
   }
+}
+
+async function readPicks(path: string): Promise<ClipFields[]> {
+  const raw = await readJsonFile(path);
   if (!Array.isArray(raw)) throw new ValidationError(`${path} must contain a JSON array of picks`);
   return raw.map((item: unknown, index) => {
     if (typeof item !== "object" || item === null) throw new ValidationError(`pick #${index + 1} must be an object`);
@@ -367,7 +392,7 @@ const COMMANDS: Record<string, CommandSpec> = {
     async run(inputs, flags) {
       const raw: Record<string, unknown> = {};
       if (typeof flags.lang === "string") raw.language = flags.lang;
-      if (typeof flags.clips === "string") raw.clipCount = parseNumber(flags.clips, "--clips");
+      if (typeof flags.clips === "string") raw.clipCount = parseClipCount(flags.clips);
       if (typeof flags.min === "string") raw.minDuration = parseNumber(flags.min, "--min");
       if (typeof flags.max === "string") raw.maxDuration = parseNumber(flags.max, "--max");
       const options = asUsage(() => parseOptions(raw));
@@ -403,7 +428,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       if (from !== undefined && !STAGE_ORDER.includes(from)) throw new UsageError(`--from must be one of ${STAGE_ORDER.join(", ")}`);
       let project = await getProject(id!);
       const raw: Record<string, unknown> = {};
-      if (typeof flags.clips === "string") raw.clipCount = parseNumber(flags.clips, "--clips");
+      if (typeof flags.clips === "string") raw.clipCount = parseClipCount(flags.clips);
       if (typeof flags.min === "string") raw.minDuration = parseNumber(flags.min, "--min");
       if (typeof flags.max === "string") raw.maxDuration = parseNumber(flags.max, "--max");
       const options = asUsage(() => parseOptions(raw, project.options));
@@ -426,12 +451,13 @@ const COMMANDS: Record<string, CommandSpec> = {
         console.log("No projects yet. Create one with: clip new <url|file>");
         return;
       }
-      const rows = [["ID", "DURATION", "STAGES", "CLIPS", "SELECTED", "RENDERED", "TITLE"]];
+      const rows = [["ID", "DURATION", "STAGES", "TARGET", "CLIPS", "SELECTED", "RENDERED", "TITLE"]];
       for (const project of projects) {
         rows.push([
           project.id,
           project.source ? formatClock(project.source.duration) : "-",
           stageSummary(project),
+          project.options.clipCount === null ? "auto" : String(project.options.clipCount),
           String(project.clips.length),
           String(project.clips.filter((clip) => clip.selected).length),
           String(project.clips.filter((clip) => clip.render.status === "done").length),
@@ -518,7 +544,7 @@ const COMMANDS: Record<string, CommandSpec> = {
       const project = await updateProject(id!, (p) => {
         removed = replaceGeneratedClips(p, picks, "agent");
       });
-      await removeOutputs(project.id, removed.map((clip) => clip.render.file));
+      await removeOutputs(project.id, removed.flatMap((clip) => [clip.render.file, clip.thumbnail.file]));
       if (json) return print(project);
       console.log(`Set ${picks.length} clip(s) (replaced ${removed.length}):`);
       for (const clip of project.clips.filter((candidate) => candidate.source === "agent")) {
@@ -589,11 +615,16 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
 
   settings: {
-    flags: { clips: "value", layout: "value", subtitles: "value", style: "value", "caption-y": "value", "focus-x": "value" },
+    flags: { clips: "value", layout: "value", "custom-json": "value", subtitles: "value", style: "value", "caption-y": "value", "focus-x": "value" },
     args: [1, 1],
     async run([id], flags) {
       const raw: Record<string, unknown> = {};
       if (typeof flags.layout === "string") raw.layout = flags.layout;
+      if (typeof flags["custom-json"] === "string") {
+        raw.custom = await readJsonFile(flags["custom-json"]);
+        // A layout without effect is never what the caller wants.
+        raw.layout ??= "custom";
+      }
       if (typeof flags.style === "string") raw.captionStyle = flags.style;
       if (typeof flags["caption-y"] === "string") raw.captionY = parseNumber(flags["caption-y"], "--caption-y");
       if (typeof flags["focus-x"] === "string") raw.focusX = parseNumber(flags["focus-x"], "--focus-x");
@@ -610,8 +641,10 @@ const COMMANDS: Record<string, CommandSpec> = {
         throw new UsageError("--clips needs at least one setting to change");
       }
       if (json) return print({ defaults: project.defaults, clips: project.clips.map((clip) => ({ id: clip.id, settings: clip.settings })) });
-      const line = (label: string, s: Project["defaults"]) =>
-        `${label} layout ${s.layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}`;
+      const line = (label: string, s: Project["defaults"]) => {
+        const layout = s.layout === "custom" && s.custom ? `custom (${s.custom.background.kind} background${s.custom.game ? ", game" : ""}${s.custom.cam ? ", cam" : ""})` : s.layout;
+        return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}`;
+      };
       console.log(line("defaults:", project.defaults));
       for (const clip of project.clips) console.log(line(`${clip.id}:`.padEnd(9), clip.settings));
     },
@@ -649,11 +682,56 @@ const COMMANDS: Record<string, CommandSpec> = {
     },
   },
 
+  thumbnail: {
+    flags: {
+      clips: "value",
+      time: "value",
+      text: "value",
+      "no-text": "bool",
+      "title-text": "bool",
+      style: "value",
+      "text-y": "value",
+    },
+    args: [1, 1],
+    async run([id], flags) {
+      const headline = ["text", "no-text", "title-text"].filter((flag) => flags[flag] !== undefined);
+      if (headline.length > 1) throw new UsageError("Use only one of --text, --no-text, --title-text");
+      const raw: Record<string, unknown> = {};
+      if (typeof flags.text === "string") raw.text = flags.text;
+      if (flags["no-text"] === true) raw.text = "";
+      if (flags["title-text"] === true) raw.text = null;
+      if (typeof flags.style === "string") raw.style = flags.style;
+      if (typeof flags["text-y"] === "string") raw.textY = parseNumber(flags["text-y"], "--text-y");
+      if (typeof flags.time === "string") {
+        raw.time = flags.time === "auto" ? null : asUsage(() => parseTime(flags.time as string));
+      }
+      const patch = asUsage(() => parseThumbnailPatch(raw));
+      let project = await getProject(id!);
+      const clipIds = parseClipList(typeof flags.clips === "string" ? flags.clips : undefined, project, "selected");
+      if (clipIds.length === 0) throw new Error("No clips to make covers for: select some (clip clips select) or pass --clips");
+      for (const clipId of clipIds) {
+        if (!project.clips.some((clip) => clip.id === clipId)) throw new NotFoundError(`Clip not found: ${clipId}`);
+      }
+      const { clipsDir } = projectPaths(project.id);
+      const outputs: { clipId: string; file: string; time: number }[] = [];
+      for (const clipId of clipIds) {
+        if (Object.keys(patch).length > 0) project = await patchClip(project.id, clipId, { thumbnail: patch });
+        project = await generateThumbnail(project.id, clipId, abort.signal);
+        const clip = project.clips.find((candidate) => candidate.id === clipId);
+        if (!clip?.thumbnail.file) throw new Error(`The cover of clip ${clipId} was not generated: the clip changed while it was made`);
+        outputs.push({ clipId, file: join(clipsDir, clip.thumbnail.file), time: clip.thumbnail.usedTime ?? 0 });
+      }
+      if (json) print(outputs);
+      else for (const output of outputs) console.log(output.file);
+    },
+  },
+
   rm: {
     flags: {},
     args: [1, 1],
     async run([id]) {
       await deleteProject(id!);
+      forgetThumbnailCandidates(id!);
       if (json) print({ deleted: id });
       else console.log(`Deleted project ${id}`);
     },

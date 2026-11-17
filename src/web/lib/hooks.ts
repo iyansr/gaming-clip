@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CAPTION_FONTS } from "../../shared/captions";
-import type { Clip, ClipSettings, Project, Transcript, Word } from "../../shared/types";
+import type { Clip, ClipSettings, ClipThumbnail, Project, Transcript, Word } from "../../shared/types";
 import { api, errorMessage, type ClipPatch } from "./api";
 import { useToast } from "./toast";
 
@@ -119,17 +119,38 @@ export interface ClipEdit {
   title?: string;
   selected?: boolean;
   settings?: Partial<ClipSettings>;
+  thumbnail?: ClipPatch["thumbnail"];
 }
 
 function mergeEdit(a: ClipEdit | undefined, b: ClipEdit): ClipEdit {
   if (!a) return b;
   const merged: ClipEdit = { ...a, ...b };
   if (a.settings || b.settings) merged.settings = { ...a.settings, ...b.settings };
+  if (a.thumbnail || b.thumbnail) merged.thumbnail = { ...a.thumbnail, ...b.thumbnail };
   return merged;
+}
+
+/** Mirrors the server: anything that changes what the cover shows drops the generated file. */
+function invalidatesThumbnail(clip: Clip, edit: ClipEdit): boolean {
+  return (
+    edit.thumbnail !== undefined ||
+    edit.start !== undefined ||
+    edit.end !== undefined ||
+    edit.settings?.layout !== undefined ||
+    edit.settings?.focusX !== undefined ||
+    edit.settings?.custom !== undefined ||
+    (edit.title !== undefined && edit.title !== clip.title && clip.thumbnail.text === null)
+  );
 }
 
 function applyEdit(clip: Clip, edit: ClipEdit | undefined): Clip {
   if (!edit) return clip;
+  let thumbnail: ClipThumbnail = clip.thumbnail;
+  if (edit.thumbnail) thumbnail = { ...thumbnail, ...edit.thumbnail };
+  if (invalidatesThumbnail(clip, edit)) {
+    const { file: _file, generatedAt: _at, usedTime: _used, ...rest } = thumbnail;
+    thumbnail = rest;
+  }
   return {
     ...clip,
     ...(edit.start !== undefined && { start: edit.start }),
@@ -137,6 +158,7 @@ function applyEdit(clip: Clip, edit: ClipEdit | undefined): Clip {
     ...(edit.title !== undefined && { title: edit.title }),
     ...(edit.selected !== undefined && { selected: edit.selected }),
     settings: edit.settings ? { ...clip.settings, ...edit.settings } : clip.settings,
+    thumbnail,
   };
 }
 
@@ -149,6 +171,7 @@ function splitEdit(edit: ClipEdit): ClipEdit[] {
   if (edit.title !== undefined) groups.push({ title: edit.title });
   if (edit.selected !== undefined) groups.push({ selected: edit.selected });
   if (edit.settings) groups.push({ settings: edit.settings });
+  if (edit.thumbnail) groups.push({ thumbnail: edit.thumbnail });
   return groups;
 }
 

@@ -1,6 +1,6 @@
 import { rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { STAGE_ORDER, type Project, type StageId } from "../shared/types";
+import { STAGE_ORDER, type Project, type SourceMeta, type StageId } from "../shared/types";
 import { FONTS_DIR, HOST, PORT, llmConfigured, projectPaths } from "../core/config";
 import { checkDeps } from "../core/doctor";
 import { grabJpeg } from "../core/frames";
@@ -13,14 +13,21 @@ import {
   recoverInterrupted,
 } from "../core/jobs";
 import {
+  addAsset,
   addClip,
+  ASSET_TYPES,
+  assetsDir,
   clampFrameTime,
+  forgetThumbnailCandidates,
+  generateThumbnail,
+  MAX_ASSET_BYTES,
   parseClipPatch,
   parseOptions,
   parseProjectPatch,
   patchClip,
   patchProject,
   removeClip,
+  thumbnailCandidates,
 } from "../core/pipeline";
 import {
   ConflictError,
@@ -29,6 +36,7 @@ import {
   getProject,
   listProjects,
   NotFoundError,
+  PayloadTooLargeError,
   subscribe,
   updateProject,
   ValidationError,
@@ -43,6 +51,7 @@ function errorResponse(error: unknown): Response {
   if (error instanceof NotFoundError) return Response.json({ error: error.message }, { status: 404 });
   if (error instanceof ValidationError) return Response.json({ error: error.message }, { status: 400 });
   if (error instanceof ConflictError) return Response.json({ error: error.message }, { status: 409 });
+  if (error instanceof PayloadTooLargeError) return Response.json({ error: error.message }, { status: 413 });
   console.error(error);
   return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
 }
@@ -50,11 +59,16 @@ function errorResponse(error: unknown): Response {
 const WILDCARD_HOSTS = ["0.0.0.0", "::"];
 const ALLOWED_HOSTNAMES = ["localhost", "127.0.0.1", "[::1]", HOST.includes(":") ? `[${HOST}]` : HOST];
 
+const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
+/** Only the asset upload route takes raw image bodies. */
+const IMAGE_CONTENT_TYPE = new RegExp(`^(${Object.keys(ASSET_TYPES).join("|")})\\s*(;|$)`, "i");
+
 /**
  * The server only listens locally, but any web page the user visits can still make their browser talk to it
  * (cross-site requests, DNS rebinding). Returns a rejection for requests that did not come from our own UI or a plain client.
+ * Requests with a body must carry `bodyType` as Content-Type.
  */
-function rejectUnsafe(req: Request): Response | null {
+function rejectUnsafe(req: Request, bodyType: RegExp): Response | null {
   const host = req.headers.get("host") ?? "";
   if (!WILDCARD_HOSTS.includes(HOST)) {
     let hostname = "";
@@ -70,15 +84,16 @@ function rejectUnsafe(req: Request): Response | null {
     return Response.json({ error: `Cross-origin request from "${origin}" is not allowed` }, { status: 403 });
   }
   const hasBody = req.headers.has("transfer-encoding") || Number(req.headers.get("content-length") ?? 0) > 0;
-  if ((req.method === "POST" || req.method === "PATCH") && hasBody && !/^application\/json\s*(;|$)/i.test(req.headers.get("content-type") ?? "")) {
-    return Response.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  if ((req.method === "POST" || req.method === "PATCH") && hasBody && !bodyType.test(req.headers.get("content-type") ?? "")) {
+    const wanted = bodyType === JSON_CONTENT_TYPE ? "application/json" : Object.keys(ASSET_TYPES).join(", ");
+    return Response.json({ error: `Content-Type must be ${wanted}` }, { status: 415 });
   }
   return null;
 }
 
 /** Applies the request checks, runs a handler and turns thrown errors into `{ error }` responses. */
-async function api(req: Request, handler: () => Promise<Response> | Response): Promise<Response> {
-  const rejected = rejectUnsafe(req);
+async function api(req: Request, handler: () => Promise<Response> | Response, bodyType = JSON_CONTENT_TYPE): Promise<Response> {
+  const rejected = rejectUnsafe(req, bodyType);
   if (rejected) return rejected;
   try {
     return await handler();
@@ -100,6 +115,26 @@ async function readBody(req: Request): Promise<Record<string, unknown>> {
     throw new ValidationError("Request body must be a JSON object");
   }
   return body as Record<string, unknown>;
+}
+
+/** Raw request body, refused as soon as it passes `limit` bytes (also for chunked bodies without a Content-Length). */
+async function readBytes(req: Request, limit: number): Promise<Uint8Array> {
+  const tooLarge = () => new PayloadTooLargeError(`The upload is larger than ${limit / 1024 / 1024} MB`);
+  if (Number(req.headers.get("content-length") ?? 0) > limit) throw tooLarge();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of req.body ?? []) {
+    size += chunk.byteLength;
+    if (size > limit) throw tooLarge();
+    chunks.push(chunk);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function requireNumber(body: Record<string, unknown>, key: string): number {
@@ -151,8 +186,9 @@ function ensureThumbnail(project: Project): Promise<string> {
   return job;
 }
 
-function requireDownloaded(project: Project): void {
+function requireDownloaded(project: Project): SourceMeta {
   if (project.stages.download.status !== "done" || !project.source) throw new NotFoundError("Source not downloaded yet");
+  return project.source;
 }
 
 /** SSE: a snapshot now, then the latest state after every change (in-process or by another process). */
@@ -281,6 +317,7 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
             await getProject(req.params.id);
             await cancelProject(req.params.id);
             await deleteProject(req.params.id);
+            forgetThumbnailCandidates(req.params.id);
             return new Response(null, { status: 204 });
           }),
         PATCH: (req) =>
@@ -289,6 +326,19 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
             const patch = parseProjectPatch(await readBody(req), current.source);
             return Response.json(await patchProject(req.params.id, patch));
           }),
+      },
+
+      "/api/projects/:id/assets": {
+        POST: (req) =>
+          api(
+            req,
+            async () => {
+              await getProject(req.params.id);
+              const bytes = await readBytes(req, MAX_ASSET_BYTES);
+              return Response.json({ file: await addAsset(req.params.id, bytes, req.headers.get("content-type") ?? "") }, { status: 201 });
+            },
+            IMAGE_CONTENT_TYPE,
+          ),
       },
 
       "/api/projects/:id/rerun": {
@@ -329,6 +379,14 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
         PATCH: (req) =>
           api(req, async () => Response.json(await patchClip(req.params.id, req.params.clipId, parseClipPatch(await readBody(req))))),
         DELETE: (req) => api(req, async () => Response.json(await removeClip(req.params.id, req.params.clipId))),
+      },
+
+      "/api/projects/:id/clips/:clipId/thumbnail": {
+        POST: (req) => api(req, async () => Response.json(await generateThumbnail(req.params.id, req.params.clipId))),
+      },
+
+      "/api/projects/:id/clips/:clipId/thumbnail/candidates": {
+        GET: (req) => api(req, async () => Response.json(await thumbnailCandidates(req.params.id, req.params.clipId))),
       },
 
       "/api/projects/:id/render": {
@@ -384,19 +442,31 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
         GET: (req) =>
           api(req, async () => {
             const project = await getProject(req.params.id);
-            requireDownloaded(project);
+            const source = requireDownloaded(project);
             const query = new URL(req.url).searchParams;
             const t = Number(query.get("t") ?? "");
             if (query.get("t") === null || query.get("t") === "" || !Number.isFinite(t) || t < 0) {
               throw new ValidationError("t must be a time in seconds >= 0");
             }
             const width = query.get("w") === null ? 960 : Number(query.get("w"));
-            if (!Number.isInteger(width) || width < 16 || width > 3840) throw new ValidationError("w must be an integer between 16 and 3840");
-            const bytes = await grabJpeg(projectPaths(project.id).source, clampFrameTime(t, project.source?.duration ?? 0), width);
+            // The preview needs a full-resolution frame, but never an upscaled one.
+            if (!Number.isInteger(width) || width < 16 || width > source.width) {
+              throw new ValidationError(`w must be an integer between 16 and ${source.width}`);
+            }
+            const bytes = await grabJpeg(projectPaths(project.id).source, clampFrameTime(t, source.duration), width);
             // grabJpeg's bytes come from Response.bytes(): never SharedArrayBuffer-backed.
             return new Response(bytes as Uint8Array<ArrayBuffer>, {
               headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=3600" },
             });
+          }),
+      },
+
+      "/media/:id/assets/:file": {
+        GET: (req) =>
+          api(req, async () => {
+            await getProject(req.params.id);
+            const file = plainFileName(req.params.file);
+            return serveFile(join(assetsDir(req.params.id), file), { "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
           }),
       },
 

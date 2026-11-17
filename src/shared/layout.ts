@@ -1,4 +1,4 @@
-import type { ClipSettings, LayoutMode, Rect, Size } from "./types";
+import type { CamElement, ClipSettings, CustomLayout, LayoutMode, Rect, Size } from "./types";
 
 /**
  * One draw step of the vertical frame: take `src` (source-video pixels) and paint it into `dst`
@@ -10,12 +10,18 @@ export interface LayoutLayer {
   blur: boolean;
   src: Rect;
   dst: Rect;
+  /** Webcam look (custom layout only): soft edge, rounded corners and border, in output px. */
+  cam?: Pick<CamElement, "feather" | "radius" | "border" | "borderColor">;
 }
 
 export interface FrameLayout {
   /** Mode actually used (`split` degrades to `fill` without a webcam rect). */
   mode: LayoutMode;
   layers: LayoutLayer[];
+  /** Base colour painted first. */
+  fill: string;
+  /** Uploaded background image (project asset file name), painted cover-fit over `fill`, before the layers. */
+  image: string | null;
 }
 
 /** Webcam panel height bounds in `split`, as a fraction of the output height. */
@@ -43,7 +49,7 @@ function cropToAspect(bounds: Rect, aspect: number, focusX = 0.5, focusY = 0.5):
 export function computeLayout(
   source: Size,
   webcam: Rect | null,
-  settings: Pick<ClipSettings, "layout" | "focusX">,
+  settings: Pick<ClipSettings, "layout" | "focusX" | "custom">,
   output: Size,
 ): FrameLayout {
   const full: Rect = { x: 0, y: 0, w: source.width, h: source.height };
@@ -53,9 +59,31 @@ export function computeLayout(
   const requested = settings.layout === "fit" && fitH >= output.height ? "fill" : settings.layout;
   const mode: LayoutMode = requested === "split" && !webcam ? "fill" : requested;
 
+  if (mode === "custom") {
+    const custom = settings.custom ?? defaultCustomLayout(source, webcam, output);
+    const { background, game, cam } = custom;
+    const layers: LayoutLayer[] = [];
+    if (background.kind === "blur") {
+      layers.push({ role: "background", blur: true, src: cropToAspect(full, output.width / output.height), dst: out });
+    }
+    if (game) layers.push({ role: "game", blur: false, src: game.src, dst: game.dst });
+    if (cam) {
+      const { feather, radius, border, borderColor } = cam;
+      layers.push({ role: "cam", blur: false, src: cam.src, dst: cam.dst, cam: { feather, radius, border, borderColor } });
+    }
+    return {
+      mode,
+      layers,
+      fill: background.kind === "color" ? background.color : "#000",
+      image: background.kind === "image" ? background.file : null,
+    };
+  }
+
   if (mode === "fit") {
     return {
       mode,
+      fill: "#000",
+      image: null,
       layers: [
         { role: "background", blur: true, src: cropToAspect(full, output.width / output.height), dst: out },
         {
@@ -75,6 +103,8 @@ export function computeLayout(
     const gameH = output.height - panelH;
     return {
       mode,
+      fill: "#000",
+      image: null,
       layers: [
         {
           role: "game",
@@ -95,6 +125,8 @@ export function computeLayout(
 
   return {
     mode: "fill",
+    fill: "#000",
+    image: null,
     layers: [
       {
         role: "game",
@@ -103,6 +135,21 @@ export function computeLayout(
         dst: out,
       },
     ],
+  };
+}
+
+/**
+ * Starting point when the user switches a clip to custom: the current split layout (webcam panel on top,
+ * gameplay below), or the plain fill without a webcam, as free elements over a blurred background.
+ */
+export function defaultCustomLayout(source: Size, webcam: Rect | null, output: Size): CustomLayout {
+  const { layers } = computeLayout(source, webcam, { layout: "split", focusX: 0.5, custom: null }, output);
+  const game = layers.find((layer) => layer.role === "game");
+  const cam = layers.find((layer) => layer.role === "cam");
+  return {
+    background: { kind: "blur" },
+    game: game ? { src: game.src, dst: game.dst } : null,
+    cam: cam ? { src: cam.src, dst: cam.dst, feather: 0, radius: 0, border: 0, borderColor: "#ffffff" } : null,
   };
 }
 

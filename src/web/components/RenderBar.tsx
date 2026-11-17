@@ -70,7 +70,7 @@ export function RenderBar({ project, clips, flushAll, applyProject }: Props) {
             <Clapperboard className="size-4" aria-hidden /> Render {todo.length} selected
           </Button>
           <span className="text-xs text-zinc-400">
-            {todo.length === 0 ? (clips.some((c) => c.selected) ? "Every selected clip is already rendered." : "Tick clips in the list to render them.") : "Sequential, one clip at a time."}
+            {todo.length === 0 ? (clips.some((c) => c.selected) ? "Every selected clip is already rendered." : "Tick clips in the list to render them.") : "Renders a couple of clips at a time."}
           </span>
         </>
       )}

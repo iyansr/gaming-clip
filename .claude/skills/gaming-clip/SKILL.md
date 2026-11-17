@@ -22,8 +22,10 @@ bun run setup            # only when doctor reports something missing (brew + mo
 ```bash
 # You pick the moments yourself (preferred when an agent is driving):
 bun run clip new "<youtube-url>" --no-highlights --json
-# Or let the built-in engine pick (heuristics; a model when LLM_COMMAND or LLM_MODEL is set in .env):
-bun run clip new "<youtube-url>" --clips 8 --min 20 --max 60 --json
+# Or let the built-in engine pick (heuristics; a model when LLM_COMMAND or LLM_MODEL is set in .env).
+# --clips auto (the default) lets the engine decide how many moments are worth posting; --clips N asks
+# for a target count (1-60):
+bun run clip new "<youtube-url>" --clips auto --min 20 --max 60 --json
 ```
 
 - Several URLs / local files can be passed at once; each becomes a project.
@@ -108,12 +110,36 @@ bun run clip render <id> --clips <clipId>
 - Layouts: `split` (webcam panel on top, gameplay below; the usual choice when a facecam exists),
   `fill` (gameplay cropped to 9:16; `--focus-x 0..1` moves the crop), `fit` (whole frame over a
   blurred background; use when the HUD or the full width matters).
+  `custom` is free-form: `clip settings <id> --clips <clipId> --custom-json layout.json` with
+  `{"background":{"kind":"blur"|"color","color":"#rrggbb"},"game":{"src":rect,"dst":rect}|null,
+  "cam":{"src":rect,"dst":rect,"feather":0-300,"radius":0-960,"border":0-40,"borderColor":"#rrggbb"}|null}`
+  (`src` in source pixels, `dst` in 1080x1920 output pixels). Usually the user designs it in the web UI.
 - Caption styles: `pop` (default), `neon`, `box`, `comic`, `clean` (static phrases, no word
   highlight; use for calm commentary), `focus`.
 - Subtitles are per clip. Turn them off for clips with little or no speech.
 - Outputs: `workspace/projects/<id>/clips/<clipId>-<title>.mp4`, 1080x1920 h264/aac.
 - After rendering, look at one frame per clip before reporting success:
   `ffmpeg -v error -y -ss 5 -i <clip.mp4> -frames:v 1 /tmp/check.jpg`.
+
+## 6. Thumbnails
+
+Rendering a clip also writes a cover image `<clipId>-<title>.jpg` next to the mp4 (automatic
+frame, clip title as headline). To make a better one:
+
+```bash
+bun run clip thumbnail <id> --clips <clipId> --text "HE WAS *RIGHT BEHIND* ME" --style impact --time 2:41
+bun run clip thumbnail <id>                 # selected clips with their current thumbnail settings
+```
+
+- `--text`: 2-6 punchy words, not the full title; wrap the key word in `*stars*` to colour it.
+  `--no-text` writes the frame only, `--title-text` goes back to the clip title.
+- `--time T|auto`: `auto` picks a sharp frame near the loudest moment. It cannot judge
+  expressions: for an important clip, look at the result (`read` the jpg) and try the reaction
+  moment itself (a little after the scream or laugh in the transcript) when the face is dull.
+- `--style`: `impact` (default), `banner`, `neon`, `comic`, `minimal`. `--text-y 0..1` moves the
+  headline; keep it off the face.
+- Changing a clip's range, layout, focus, or its title (when the title is the headline) discards
+  the thumbnail file; generate again.
 
 ## Other commands
 

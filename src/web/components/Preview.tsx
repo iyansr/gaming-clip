@@ -1,22 +1,23 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { buildCues, drawCaptions, type CaptionCue } from "../../shared/captions";
 import { computeLayout } from "../../shared/layout";
-import { OUTPUT_SIZE, type Clip, type Project, type Word } from "../../shared/types";
+import { OUTPUT_SIZE, type Clip, type CustomLayout, type Project, type Word } from "../../shared/types";
 import { media } from "../lib/api";
+import { resolveCustom, type CustomUi } from "../lib/custom";
 import { cn, fmtTime } from "../lib/format";
+import { useAssetImage } from "../lib/images";
+import { LayoutPainter } from "../lib/paint";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
+import { CustomOverlay } from "./CustomOverlay";
+import { ThumbnailCanvas } from "./ThumbnailEditor";
 import { Button } from "./ui";
-
-/** Same low-resolution blur the renderer uses (render.ts BLUR_DOWNSCALE / BLUR_SIGMA). */
-const BLUR_DOWNSCALE = 8;
-const BLUR_SIGMA = 6;
 
 /** 9:16 canvas whose height is min(62vh, 620px). */
 const PREVIEW_WIDTH = "calc(min(62vh, 620px) * 9 / 16)";
 
-export type PreviewMode = "preview" | "rendered";
+export type PreviewMode = "preview" | "rendered" | "thumbnail";
 
 interface Props {
   project: Project;
@@ -26,6 +27,12 @@ interface Props {
   fontsReady: boolean;
   mode: PreviewMode;
   onModeChange: (mode: PreviewMode) => void;
+  /** Source time of the cover frame; null while it is being picked. */
+  thumbnailTime: number | null;
+  customUi: CustomUi;
+  onCustomUiChange: (ui: CustomUi) => void;
+  /** Whole new free-form layout from the on-canvas boxes. */
+  onCustomChange: (custom: CustomLayout) => void;
 }
 
 /** Everything the draw callback needs, kept in a ref so the frame loop never restarts. */
@@ -34,55 +41,50 @@ interface DrawState {
   clip: Clip;
   cues: CaptionCue[];
   fontsReady: boolean;
+  image: HTMLImageElement | null;
 }
 
-export function Preview({ project, clip, words, player, fontsReady, mode, onModeChange }: Props) {
+export function Preview({ project, clip, words, player, fontsReady, mode, onModeChange, thumbnailTime, customUi, onCustomUiChange, onCustomChange }: Props) {
   const toast = useToast();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const blurRef = useRef<HTMLCanvasElement | null>(null);
+  const painter = useRef<LayoutPainter | null>(null);
+  const [hover, setHover] = useState(false);
 
   const cues = useMemo(
     () => buildCues(words, clip.start, clip.end, clip.settings.captionStyle),
     [words, clip.start, clip.end, clip.settings.captionStyle],
   );
-  const state = useRef<DrawState>({ project, clip, cues, fontsReady });
-  state.current = { project, clip, cues, fontsReady };
+  const sourceSize = project.source ? { width: project.source.width, height: project.source.height } : null;
+  const custom = clip.settings.layout === "custom" && sourceSize ? resolveCustom(sourceSize, project.webcam.rect, clip.settings.custom) : null;
+  const imageFile = custom?.background.kind === "image" ? custom.background.file : null;
+  const image = useAssetImage(project.id, imageFile);
+  const state = useRef<DrawState>({ project, clip, cues, fontsReady, image });
+  state.current = { project, clip, cues, fontsReady, image };
 
   const rendered = clip.render.status === "done" && clip.render.file ? clip.render.file : null;
-  const showRendered = mode === "rendered" && rendered !== null;
+  const shown: PreviewMode = mode === "rendered" && rendered === null ? "preview" : mode;
+  const showRendered = shown === "rendered";
+  /** The live canvas is only mounted in preview mode. */
+  const live = shown === "preview";
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || showRendered) return;
+    if (!canvas || !live) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas is not available in this browser");
-    const blurCanvas = (blurRef.current ??= document.createElement("canvas"));
-    const blurCtx = blurCanvas.getContext("2d");
-    if (!blurCtx) throw new Error("2D canvas is not available in this browser");
+    const layoutPainter = (painter.current ??= new LayoutPainter());
 
     player.draw = () => {
-      const { project: p, clip: c, cues: cs, fontsReady: fonts } = state.current;
+      const { project: p, clip: c, cues: cs, fontsReady: fonts, image: background } = state.current;
       const video = player.video;
-      ctx.fillStyle = "#000";
-      ctx.fillRect(0, 0, OUTPUT_SIZE.width, OUTPUT_SIZE.height);
-      if (!p.source || video.readyState < 2) return;
+      if (!p.source || video.readyState < 2) {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, OUTPUT_SIZE.width, OUTPUT_SIZE.height);
+        return;
+      }
 
       const layout = computeLayout({ width: p.source.width, height: p.source.height }, p.webcam.rect, c.settings, OUTPUT_SIZE);
-      for (const { src, dst, blur } of layout.layers) {
-        if (blur) {
-          const w = Math.max(2, Math.round(dst.w / BLUR_DOWNSCALE));
-          const h = Math.max(2, Math.round(dst.h / BLUR_DOWNSCALE));
-          if (blurCanvas.width !== w || blurCanvas.height !== h) {
-            blurCanvas.width = w;
-            blurCanvas.height = h;
-          }
-          blurCtx.filter = `blur(${BLUR_SIGMA}px)`;
-          blurCtx.drawImage(video, src.x, src.y, src.w, src.h, 0, 0, w, h);
-          ctx.drawImage(blurCanvas, 0, 0, w, h, dst.x, dst.y, dst.w, dst.h);
-        } else {
-          ctx.drawImage(video, src.x, src.y, src.w, src.h, dst.x, dst.y, dst.w, dst.h);
-        }
-      }
+      layoutPainter.paint(ctx, video, layout, background, OUTPUT_SIZE);
       if (c.settings.subtitles && fonts) {
         drawCaptions(ctx, cs, video.currentTime - c.start, c.settings.captionStyle, {
           width: OUTPUT_SIZE.width,
@@ -95,16 +97,16 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
     return () => {
       player.draw = null;
     };
-  }, [player, showRendered]);
+  }, [player, live]);
 
   // Redraw while paused whenever anything the picture depends on changes.
   useEffect(() => {
     player.invalidate();
-  }, [player, project.webcam.rect, project.source, clip.settings, cues, fontsReady, showRendered]);
+  }, [player, project.webcam.rect, project.source, clip.settings, cues, fontsReady, image, live]);
 
   useEffect(() => {
-    if (showRendered) player.pause();
-  }, [player, showRendered]);
+    if (!live) player.pause();
+  }, [player, live]);
 
   const playing = usePlayer(player, (p) => p.playing);
   const time = usePlayer(player, (p) => p.time);
@@ -116,39 +118,42 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
   const local = Math.min(length, Math.max(0, time - clip.start));
   const togglePlay = () => player.toggle().catch((e: unknown) => toast.error(e));
 
+  const locked = clip.render.status === "queued" || clip.render.status === "rendering";
+  const editing = live && custom !== null && !locked;
+  /** Boxes only show while paused or hovered, so they never cover playback. */
+  const showBoxes = editing && (!playing || hover);
+
   return (
     <div className="flex flex-none flex-col gap-2" style={{ width: PREVIEW_WIDTH }}>
       <div className="flex items-center justify-between gap-2">
         <div role="group" aria-label="Preview mode" className="inline-flex rounded-md border border-zinc-700 p-0.5">
-          {(["preview", "rendered"] as const).map((m) => (
+          {(["preview", "rendered", "thumbnail"] as const).map((m) => (
             <button
               key={m}
               type="button"
-              aria-pressed={showRendered === (m === "rendered")}
+              aria-pressed={shown === m}
               disabled={m === "rendered" && !rendered}
               title={m === "rendered" && !rendered ? "Render this clip to compare" : undefined}
               onClick={() => onModeChange(m)}
               className={cn(
                 "h-6 rounded px-2.5 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-40",
-                showRendered === (m === "rendered") ? "bg-zinc-100 text-zinc-900" : "text-zinc-300 hover:bg-zinc-800",
+                shown === m ? "bg-zinc-100 text-zinc-900" : "text-zinc-300 hover:bg-zinc-800",
               )}
             >
               {m}
             </button>
           ))}
         </div>
-        {rendered && (
-          <a
-            href={media.clip(project.id, rendered, true)}
-            download
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
-          >
-            <Download className="size-3.5" aria-hidden /> Download
-          </a>
-        )}
+        {shown === "thumbnail"
+          ? clip.thumbnail.file && <DownloadLink href={media.clip(project.id, clip.thumbnail.file, true)} />
+          : rendered && <DownloadLink href={media.clip(project.id, rendered, true)} />}
       </div>
 
-      <div className="relative aspect-[9/16] w-full overflow-hidden rounded-lg border border-zinc-800 bg-black">
+      <div
+        onPointerEnter={() => setHover(true)}
+        onPointerLeave={() => setHover(false)}
+        className="relative aspect-[9/16] w-full overflow-hidden rounded-lg border border-zinc-800 bg-black"
+      >
         {showRendered && rendered ? (
           <video
             key={`${rendered}-${clip.render.renderedAt ?? ""}`}
@@ -158,6 +163,8 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
             className="size-full bg-black object-contain"
             aria-label={`Rendered short: ${clip.title}`}
           />
+        ) : shown === "thumbnail" ? (
+          <ThumbnailCanvas project={project} clip={clip} time={thumbnailTime} fontsReady={fontsReady} />
         ) : (
           <>
             <canvas
@@ -169,11 +176,12 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
               aria-label="Vertical preview of the short"
             />
             {error && <div className="absolute inset-x-2 top-2 rounded bg-red-950/90 p-2 text-xs text-red-100">{error}</div>}
+            {showBoxes && custom && <CustomOverlay custom={custom} ui={customUi} onUiChange={onCustomUiChange} onChange={onCustomChange} />}
           </>
         )}
       </div>
 
-      {!showRendered && (
+      {live && (
         <div className="flex w-full flex-col gap-1.5">
           <input
             type="range"
@@ -216,5 +224,17 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
         </div>
       )}
     </div>
+  );
+}
+
+function DownloadLink({ href }: { href: string }) {
+  return (
+    <a
+      href={href}
+      download
+      className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
+    >
+      <Download className="size-3.5" aria-hidden /> Download
+    </a>
   );
 }

@@ -16,9 +16,13 @@ interface Job {
   settle: () => void;
 }
 
-/** One heavy job (download, whisper, ffmpeg) at a time, FIFO. */
+/**
+ * FIFO queue. Renders run up to MAX_RENDER_JOBS at a time (ffmpeg already uses several cores, so a few overlapping
+ * encodes mostly hide the single-threaded caption/canvas work). A pipeline job (download, whisper) runs alone.
+ */
+const MAX_RENDER_JOBS = Math.max(1, Number(process.env.GCLIP_RENDER_JOBS) || 2);
 const queue: Job[] = [];
-let current: Job | null = null;
+const running = new Set<Job>();
 
 function createJob(projectId: string, kind: Job["kind"], run: Job["run"], clipId?: string): Job {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -34,18 +38,21 @@ async function execute(job: Job): Promise<void> {
       console.error(`${job.kind} job for project ${job.projectId} failed:`, error instanceof Error ? error.message : error);
     }
   } finally {
-    current = null;
+    running.delete(job);
     job.settle();
     pump();
   }
 }
 
 function pump(): void {
-  if (current) return;
-  const next = queue.shift();
-  if (!next) return;
-  current = next;
-  void execute(next);
+  for (let next = queue[0]; next; next = queue[0]) {
+    const alone = next.kind === "pipeline";
+    const exclusive = [...running].some((job) => job.kind === "pipeline");
+    if (exclusive || (alone ? running.size > 0 : running.size >= MAX_RENDER_JOBS)) return;
+    queue.shift();
+    running.add(next);
+    void execute(next);
+  }
 }
 
 function push(job: Job): Promise<void> {
@@ -58,7 +65,7 @@ function push(job: Job): Promise<void> {
 const reservedPipelines = new Set<string>();
 
 export function isPipelineActive(projectId: string): boolean {
-  return reservedPipelines.has(projectId) || [current, ...queue].some((job) => job?.projectId === projectId && job.kind === "pipeline");
+  return reservedPipelines.has(projectId) || [...running, ...queue].some((job) => job.projectId === projectId && job.kind === "pipeline");
 }
 
 /**
@@ -135,10 +142,9 @@ async function cancelJobs(projectId: string, kinds: Job["kind"][]): Promise<Job[
     job.controller.abort();
     job.settle();
   }
-  if (current && matches(current)) {
-    current.controller.abort();
-    await current.settled;
-  }
+  const active = [...running].filter(matches);
+  for (const job of active) job.controller.abort();
+  await Promise.all(active.map((job) => job.settled));
   return cancelledQueued;
 }
 
@@ -164,15 +170,22 @@ export const cancelProject = (projectId: string) => cancel(projectId, ["pipeline
 
 /** Graceful shutdown: aborts the running job (killing its ffmpeg/whisper child) and drops everything queued. */
 export async function cancelAll(): Promise<void> {
-  const projectIds = new Set([current, ...queue].flatMap((job) => (job ? [job.projectId] : [])));
+  const projectIds = new Set([...running, ...queue].map((job) => job.projectId));
   await Promise.all([...projectIds].map(cancelProject));
 }
 
 /**
  * Called at server start: anything left marked running/queued is a leftover of a crash, unless the project's `.busy`
  * marker names another live process (a CLI render, another server), whose work must not be touched.
+ * Runs once per OS process: `bun --hot` re-runs the entry (and this function) on every file change in the same
+ * process, where jobs are still alive and their `.busy` marker holds this very pid.
  */
+const RECOVERY_FLAG = "__gclipRecoveryDone";
+const recoveryGlobal = globalThis as typeof globalThis & { [RECOVERY_FLAG]?: boolean };
+
 export async function recoverInterrupted(): Promise<void> {
+  if (recoveryGlobal[RECOVERY_FLAG]) return;
+  recoveryGlobal[RECOVERY_FLAG] = true;
   for (const project of await listProjects()) {
     if (busyElsewhere(project.id)) continue;
     const stagesRunning = Object.values(project.stages).some((stage) => stage.status === "running");

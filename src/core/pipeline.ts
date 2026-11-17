@@ -1,20 +1,31 @@
-import { rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { loadImage } from "@napi-rs/canvas";
 import { CAPTION_STYLES } from "../shared/captions";
+import { defaultCustomLayout } from "../shared/layout";
+import { THUMBNAIL_STYLES } from "../shared/thumbnail";
 import {
   DEFAULT_OPTIONS,
+  DEFAULT_THUMBNAIL,
+  OUTPUT_SIZE,
   STAGE_ORDER,
+  type CamElement,
   type Clip,
   type ClipSettings,
   type ClipSource,
+  type ClipThumbnail,
+  type CustomLayout,
+  type LayoutBackground,
+  type LayoutElement,
   type LayoutMode,
+  type LoudnessEnvelope,
   type Project,
   type ProjectOptions,
   type Rect,
   type SourceMeta,
   type StageId,
   type Transcript,
-  type LoudnessEnvelope,
   type Webcam,
   type Word,
 } from "../shared/types";
@@ -25,14 +36,17 @@ import { findHighlights } from "./highlights";
 import { renderClip } from "./render";
 import {
   ConflictError,
+  getProject,
   markBusy,
   newClipId,
   NotFoundError,
+  PayloadTooLargeError,
   throttledUpdater,
   updateProject,
   ValidationError,
 } from "./store";
 import { extractAudio, transcribe } from "./transcribe";
+import { renderThumbnail, suggestThumbnailTimes, type ThumbnailCandidate } from "./thumbnail";
 import { detectWebcam } from "./webcam";
 
 export const MIN_CLIP_SECONDS = 3;
@@ -92,8 +106,9 @@ export function makeClip(project: Project, fields: ClipFields, source: ClipSourc
     score: Math.min(100, Math.max(0, fields.score)),
     source,
     selected: source === "agent" || source === "manual",
-    settings: { ...project.defaults },
+    settings: concreteSettings(project, { ...project.defaults }),
     render: { status: "idle", progress: 0 },
+    thumbnail: { ...DEFAULT_THUMBNAIL },
   };
 }
 
@@ -106,12 +121,24 @@ export function clampFrameTime(t: number, duration: number): number {
  * Warnings carry a fixed prefix per origin so a re-run of that origin replaces its own warnings
  * instead of piling up (Project.warnings stays a plain string[]).
  */
-export const WARNING_PREFIX = { transcribe: "Transcript: ", highlights: "Highlights: ", render: "Render: " } as const;
+export const WARNING_PREFIX = {
+  transcribe: "Transcript: ",
+  highlights: "Highlights: ",
+  render: "Render: ",
+  thumbnail: "Thumbnail: ",
+} as const;
 
 function replaceWarnings(project: Project, prefixes: string[], warnings: string[]): void {
   const kept = project.warnings.filter((warning) => !prefixes.some((prefix) => warning.startsWith(prefix)));
   for (const warning of warnings) if (!kept.includes(warning)) kept.push(warning);
   project.warnings = kept;
+}
+
+/** Thumbnail warnings are replaced per clip, so a retry of one clip keeps the failures of the others. */
+function replaceThumbnailWarning(project: Project, clipId: string, message: string | null): void {
+  const prefix = `${WARNING_PREFIX.thumbnail}Clip ${clipId}: `;
+  project.warnings = project.warnings.filter((warning) => !warning.startsWith(prefix));
+  if (message !== null) project.warnings.push(prefix + message);
 }
 
 const byStart = (a: Clip, b: Clip) => a.start - b.start;
@@ -171,8 +198,8 @@ export function parseOptions(raw: unknown, base: ProjectOptions = DEFAULT_OPTION
   if (typeof merged.language !== "string" || !/^(auto|[a-z]{2,3})$/.test(merged.language)) {
     throw new ValidationError(`language must be "auto" or a language code like "en"`);
   }
-  if (!Number.isInteger(merged.clipCount) || merged.clipCount < 1 || merged.clipCount > 50) {
-    throw new ValidationError("clipCount must be an integer between 1 and 50");
+  if (merged.clipCount !== null && (!Number.isInteger(merged.clipCount) || merged.clipCount < 1 || merged.clipCount > 60)) {
+    throw new ValidationError("clipCount must be null (auto) or an integer between 1 and 60");
   }
   numberInRange(merged.minDuration, "minDuration", MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
   numberInRange(merged.maxDuration, "maxDuration", MIN_CLIP_SECONDS, MAX_CLIP_SECONDS);
@@ -180,17 +207,168 @@ export function parseOptions(raw: unknown, base: ProjectOptions = DEFAULT_OPTION
   return merged;
 }
 
-const LAYOUTS: LayoutMode[] = ["split", "fill", "fit"];
+const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+/** What the asset upload generates (random hex + image extension); anything else cannot name an asset. */
+const ASSET_NAME_PATTERN = /^[a-f0-9]{8,64}\.(png|jpg|webp)$/;
+const MIN_ELEMENT_PX = 16;
+
+function parseElementRect(raw: unknown, what: string, bounds: { x: [number, number]; y: [number, number]; w: [number, number]; h: [number, number] }): Rect {
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["x", "y", "w", "h"], what);
+  return {
+    x: numberInRange(obj.x, `${what}.x`, ...bounds.x),
+    y: numberInRange(obj.y, `${what}.y`, ...bounds.y),
+    w: numberInRange(obj.w, `${what}.w`, ...bounds.w),
+    h: numberInRange(obj.h, `${what}.h`, ...bounds.h),
+  };
+}
+
+function parseElement(raw: unknown, what: string, extra: string[]): { obj: Record<string, unknown>; src: Rect; dst: Rect } {
+  const obj = asObject(raw, what);
+  rejectUnknownKeys(obj, ["src", "dst", ...extra], what);
+  const { width, height } = OUTPUT_SIZE;
+  const src = parseElementRect(obj.src, `${what}.src`, {
+    x: [0, 1e5],
+    y: [0, 1e5],
+    w: [MIN_ELEMENT_PX, 1e5],
+    h: [MIN_ELEMENT_PX, 1e5],
+  });
+  const dst = parseElementRect(obj.dst, `${what}.dst`, {
+    x: [-width, 2 * width],
+    y: [-height, 2 * height],
+    w: [MIN_ELEMENT_PX, 4 * width],
+    h: [MIN_ELEMENT_PX, 4 * height],
+  });
+  return { obj, src, dst };
+}
+
+/**
+ * Strict structure and range check of a free-form layout (unknown keys rejected). What depends on the
+ * project (the source frame size, uploaded image files) is checked by `checkCustomLayout`.
+ */
+export function parseCustomLayout(raw: unknown): CustomLayout {
+  const obj = asObject(raw, "custom");
+  rejectUnknownKeys(obj, ["background", "game", "cam"], "custom");
+
+  const background = asObject(obj.background, "custom.background");
+  let parsedBackground: LayoutBackground;
+  if (background.kind === "blur") {
+    rejectUnknownKeys(background, ["kind"], "custom.background");
+    parsedBackground = { kind: "blur" };
+  } else if (background.kind === "color") {
+    rejectUnknownKeys(background, ["kind", "color"], "custom.background");
+    if (typeof background.color !== "string" || !COLOR_PATTERN.test(background.color)) {
+      throw new ValidationError("custom.background.color must be a colour like #1e1b4b");
+    }
+    parsedBackground = { kind: "color", color: background.color.toLowerCase() };
+  } else if (background.kind === "image") {
+    rejectUnknownKeys(background, ["kind", "file"], "custom.background");
+    if (typeof background.file !== "string" || !ASSET_NAME_PATTERN.test(background.file)) {
+      throw new ValidationError("custom.background.file must be the file name returned by the assets upload");
+    }
+    parsedBackground = { kind: "image", file: background.file };
+  } else {
+    throw new ValidationError(`custom.background.kind must be one of blur, color, image`);
+  }
+
+  let game: LayoutElement | null = null;
+  if (obj.game !== null) {
+    const { src, dst } = parseElement(obj.game, "custom.game", []);
+    game = { src, dst };
+  }
+
+  let cam: CamElement | null = null;
+  if (obj.cam !== null) {
+    const { obj: style, src, dst } = parseElement(obj.cam, "custom.cam", ["feather", "radius", "border", "borderColor"]);
+    if (typeof style.borderColor !== "string" || !COLOR_PATTERN.test(style.borderColor)) {
+      throw new ValidationError("custom.cam.borderColor must be a colour like #ffffff");
+    }
+    cam = {
+      src,
+      dst,
+      feather: numberInRange(style.feather, "custom.cam.feather", 0, 300),
+      radius: numberInRange(style.radius, "custom.cam.radius", 0, 960),
+      border: numberInRange(style.border, "custom.cam.border", 0, 40),
+      borderColor: style.borderColor.toLowerCase(),
+    };
+  }
+  return { background: parsedBackground, game, cam };
+}
+
+/** Directory of a project's uploaded background images. */
+export const assetsDir = (id: string) => join(projectPaths(id).dir, "assets");
+
+/** Image types accepted for background uploads, with the file extension they are stored under. */
+export const ASSET_TYPES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+export const MAX_ASSET_BYTES = 15 * 1024 * 1024;
+
+/** The image type the bytes really are (by magic number), whatever the upload claims. */
+function sniffImageType(bytes: Uint8Array): string | null {
+  const starts = (...sig: number[]) => sig.every((byte, i) => bytes[i] === byte);
+  if (starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+  if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
+  // RIFF <size> WEBP
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  return null;
+}
+
+/** Stores an uploaded background image under a random name in the project's assets directory and returns that name. */
+export async function addAsset(id: string, bytes: Uint8Array, contentType: string): Promise<string> {
+  await getProject(id);
+  const type = contentType.split(";")[0]!.trim().toLowerCase();
+  const ext = ASSET_TYPES[type];
+  if (!ext) throw new ValidationError(`Content-Type must be one of ${Object.keys(ASSET_TYPES).join(", ")}`);
+  if (bytes.length === 0) throw new ValidationError("The upload is empty");
+  if (bytes.length > MAX_ASSET_BYTES) throw new PayloadTooLargeError(`The image is larger than ${MAX_ASSET_BYTES / 1024 / 1024} MB`);
+  if (sniffImageType(bytes) !== type) throw new ValidationError(`The file is not a ${type} image`);
+  try {
+    await loadImage(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+  } catch {
+    throw new ValidationError(`The ${type} image cannot be decoded`);
+  }
+  const name = `${Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}.${ext}`;
+  const dir = assetsDir(id);
+  await mkdir(dir, { recursive: true });
+  const temp = join(dir, `.${name}.partial`);
+  try {
+    await Bun.write(temp, bytes);
+    await rename(temp, join(dir, name));
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
+  return name;
+}
+
+/** The parts of a valid layout that depend on the project: elements cut from inside the source frame, uploaded image present. */
+function checkCustomLayout(custom: CustomLayout, project: Project): void {
+  if (!project.source) throw new ValidationError("The source video is not downloaded yet, so a custom layout cannot be checked");
+  const { width, height } = project.source;
+  const elements = { game: custom.game, cam: custom.cam };
+  for (const [name, element] of Object.entries(elements)) {
+    if (!element) continue;
+    const { x, y, w, h } = element.src;
+    if (x + w > width + EPSILON || y + h > height + EPSILON) {
+      throw new ValidationError(`custom.${name}.src ${x},${y},${w},${h} exceeds the ${width}x${height} source frame`);
+    }
+  }
+  if (custom.background.kind === "image" && !existsSync(join(assetsDir(project.id), custom.background.file))) {
+    throw new ValidationError(`custom.background.file ${custom.background.file} was not uploaded to this project`);
+  }
+}
+
+const LAYOUTS: LayoutMode[] = ["split", "fill", "fit", "custom"];
 
 export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
   const obj = asObject(raw, "settings");
-  rejectUnknownKeys(obj, ["layout", "focusX", "subtitles", "captionStyle", "captionY"], "settings");
+  rejectUnknownKeys(obj, ["layout", "focusX", "custom", "subtitles", "captionStyle", "captionY"], "settings");
   const patch: Partial<ClipSettings> = {};
   if (obj.layout !== undefined) {
     if (!LAYOUTS.includes(obj.layout as LayoutMode)) throw new ValidationError(`layout must be one of ${LAYOUTS.join(", ")}`);
     patch.layout = obj.layout as LayoutMode;
   }
   if (obj.focusX !== undefined) patch.focusX = numberInRange(obj.focusX, "focusX", 0, 1);
+  if (obj.custom !== undefined) patch.custom = obj.custom === null ? null : parseCustomLayout(obj.custom);
   if (obj.captionY !== undefined) patch.captionY = numberInRange(obj.captionY, "captionY", 0, 1);
   if (obj.subtitles !== undefined) {
     if (typeof obj.subtitles !== "boolean") throw new ValidationError("subtitles must be true or false");
@@ -203,6 +381,43 @@ export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
     }
     patch.captionStyle = obj.captionStyle;
   }
+  return patch;
+}
+
+export interface ThumbnailPatch {
+  time?: number | null;
+  text?: string | null;
+  style?: string;
+  textY?: number;
+}
+
+const THUMBNAIL_TEXT_LIMIT = 120;
+
+export function parseThumbnailPatch(raw: unknown): ThumbnailPatch {
+  const obj = asObject(raw, "thumbnail");
+  rejectUnknownKeys(obj, ["time", "text", "style", "textY"], "thumbnail");
+  const patch: ThumbnailPatch = {};
+  if ("time" in obj) {
+    if (obj.time !== null && (typeof obj.time !== "number" || !Number.isFinite(obj.time))) {
+      throw new ValidationError("thumbnail.time must be a number or null");
+    }
+    patch.time = obj.time as number | null;
+  }
+  if ("text" in obj) {
+    if (obj.text !== null && typeof obj.text !== "string") throw new ValidationError("thumbnail.text must be a string or null");
+    if (typeof obj.text === "string" && obj.text.length > THUMBNAIL_TEXT_LIMIT) {
+      throw new ValidationError(`thumbnail.text must be at most ${THUMBNAIL_TEXT_LIMIT} characters`);
+    }
+    patch.text = obj.text as string | null;
+  }
+  if ("style" in obj) {
+    const ids = THUMBNAIL_STYLES.map((style) => style.id);
+    if (typeof obj.style !== "string" || !ids.includes(obj.style)) {
+      throw new ValidationError(`thumbnail.style must be one of ${ids.join(", ")}`);
+    }
+    patch.style = obj.style;
+  }
+  if ("textY" in obj) patch.textY = numberInRange(obj.textY, "thumbnail.textY", 0, 1);
   return patch;
 }
 
@@ -228,11 +443,12 @@ export interface ClipPatch {
   title?: string;
   selected?: boolean;
   settings?: Partial<ClipSettings>;
+  thumbnail?: ThumbnailPatch;
 }
 
 export function parseClipPatch(raw: unknown): ClipPatch {
   const obj = asObject(raw, "clip patch");
-  rejectUnknownKeys(obj, ["start", "end", "title", "selected", "settings"], "clip");
+  rejectUnknownKeys(obj, ["start", "end", "title", "selected", "settings", "thumbnail"], "clip");
   const patch: ClipPatch = {};
   for (const key of ["start", "end"] as const) {
     if (obj[key] === undefined) continue;
@@ -250,6 +466,7 @@ export function parseClipPatch(raw: unknown): ClipPatch {
     patch.selected = obj.selected;
   }
   if (obj.settings !== undefined) patch.settings = parseSettingsPatch(obj.settings);
+  if (obj.thumbnail !== undefined) patch.thumbnail = parseThumbnailPatch(obj.thumbnail);
   return patch;
 }
 
@@ -281,6 +498,14 @@ export function parseProjectPatch(raw: unknown, frame: { width: number; height: 
 // Project operations shared by the HTTP API and the CLI
 // ---------------------------------------------------------------------------------------------
 
+/** Drops the generated cover of a clip: its file joins `stale` (deleted after the write), the stored fields are unset. */
+function clearGeneratedThumbnail(clip: Clip, stale: string[]): void {
+  if (clip.thumbnail.file) stale.push(clip.thumbnail.file);
+  delete clip.thumbnail.file;
+  delete clip.thumbnail.generatedAt;
+  delete clip.thumbnail.usedTime;
+}
+
 /** Output of a clip that was changed is stale: drop it, unless a render is in flight. */
 function invalidateRender(clip: Clip, stale: string[]): void {
   if (isBusy(clip)) throw new ConflictError(`Clip ${clip.id} is ${clip.render.status}; cancel the render before changing it`);
@@ -298,11 +523,29 @@ function invalidateWebcamClips(project: Project, next: Webcam, stale: string[], 
     if (clip.settings.layout !== "split") continue;
     if (isBusy(clip) && !strict) continue;
     invalidateRender(clip, stale);
+    clearGeneratedThumbnail(clip, stale);
   }
 }
 
+/** Settings that change the picture of the frame (not the captions). `custom` only counts while it is in use. */
+const framingDiffers = (a: ClipSettings, b: ClipSettings) =>
+  a.layout !== b.layout ||
+  a.focusX !== b.focusX ||
+  (b.layout === "custom" && JSON.stringify(a.custom) !== JSON.stringify(b.custom));
+
 const settingsDiffer = (a: ClipSettings, b: ClipSettings) =>
-  (Object.keys(b) as (keyof ClipSettings)[]).some((key) => a[key] !== b[key]);
+  framingDiffers(a, b) || (Object.keys(b) as (keyof ClipSettings)[]).some((key) => key !== "custom" && a[key] !== b[key]);
+
+/**
+ * A clip in the custom layout always stores a concrete layout: without one it starts from the
+ * default (the current split) so later webcam changes do not move its elements.
+ */
+function concreteSettings(project: Project, settings: ClipSettings): ClipSettings {
+  if (settings.layout !== "custom" || settings.custom) return settings;
+  if (!project.source) throw new ValidationError("The source video is not downloaded yet, so the custom layout has no starting point");
+  const { width, height } = project.source;
+  return { ...settings, custom: defaultCustomLayout({ width, height }, project.webcam.rect, OUTPUT_SIZE) };
+}
 
 function findClip(project: Project, clipId: string): Clip {
   const clip = project.clips.find((candidate) => candidate.id === clipId);
@@ -323,6 +566,7 @@ export async function removeClip(id: string, clipId: string): Promise<Project> {
     const clip = findClip(p, clipId);
     if (isBusy(clip)) throw new ConflictError(`Clip ${clipId} is ${clip.render.status}; cancel the render before deleting it`);
     if (clip.render.file) stale.push(clip.render.file);
+    clearGeneratedThumbnail(clip, stale);
     p.clips = p.clips.filter((candidate) => candidate !== clip);
   });
   await removeOutputs(id, stale);
@@ -336,15 +580,30 @@ export async function patchClip(id: string, clipId: string, patch: ClipPatch): P
     const start = patch.start ?? clip.start;
     const end = patch.end ?? clip.end;
     const timingChanged = start !== clip.start || end !== clip.end;
-    const settings = { ...clip.settings, ...patch.settings };
+    if (patch.settings?.custom) checkCustomLayout(patch.settings.custom, p);
+    const settings = concreteSettings(p, { ...clip.settings, ...patch.settings });
     if (timingChanged) {
       if (!p.source) throw new ValidationError("The source video is not downloaded yet");
       assertClipRange(start, end, p.source.duration);
     }
+    const requestedTime = patch.thumbnail?.time;
+    if (requestedTime !== undefined && requestedTime !== null && (requestedTime < start || requestedTime > end)) {
+      throw new ValidationError(`thumbnail.time ${requestedTime}s is outside the clip (${start}s-${end}s)`);
+    }
+    const thumbnail: ClipThumbnail = { ...clip.thumbnail, ...patch.thumbnail };
+    if (thumbnail.time !== null && (thumbnail.time < start || thumbnail.time > end)) thumbnail.time = null;
+    const thumbnailChanged =
+      patch.thumbnail !== undefined &&
+      (Object.keys(patch.thumbnail) as (keyof ThumbnailPatch)[]).some((key) => patch.thumbnail?.[key] !== clip.thumbnail[key]);
+    const framingChanged = timingChanged || framingDiffers(clip.settings, settings);
     if (timingChanged || settingsDiffer(clip.settings, settings)) invalidateRender(clip, stale);
     clip.start = start;
     clip.end = end;
     clip.settings = settings;
+    clip.thumbnail = thumbnail;
+    // A cover without its own text shows the clip title.
+    const headlineChanged = patch.title !== undefined && patch.title !== clip.title && thumbnail.text === null;
+    if (framingChanged || thumbnailChanged || headlineChanged) clearGeneratedThumbnail(clip, stale);
     if (patch.title !== undefined) clip.title = patch.title;
     if (patch.selected !== undefined) clip.selected = patch.selected;
     p.clips.sort(byStart);
@@ -368,12 +627,14 @@ export async function selectClips(id: string, which: string[] | "all" | "none"):
 export async function updateSettings(id: string, patch: Partial<ClipSettings>, target: string[] | "all" | null): Promise<Project> {
   const stale: string[] = [];
   const project = await updateProject(id, (p) => {
+    if (patch.custom) checkCustomLayout(patch.custom, p);
     const clips = target === null ? [] : target === "all" ? p.clips : target.map((clipId) => findClip(p, clipId));
     if (target === null || target === "all") p.defaults = { ...p.defaults, ...patch };
     for (const clip of clips) {
-      const settings = { ...clip.settings, ...patch };
+      const settings = concreteSettings(p, { ...clip.settings, ...patch });
       if (!settingsDiffer(clip.settings, settings)) continue;
       invalidateRender(clip, stale);
+      if (framingDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
       clip.settings = settings;
     }
   });
@@ -384,7 +645,10 @@ export async function updateSettings(id: string, patch: Partial<ClipSettings>, t
 export async function patchProject(id: string, patch: ProjectPatch): Promise<Project> {
   const stale: string[] = [];
   const project = await updateProject(id, (p) => {
-    if (patch.defaults) p.defaults = { ...p.defaults, ...patch.defaults };
+    if (patch.defaults) {
+      if (patch.defaults.custom) checkCustomLayout(patch.defaults.custom, p);
+      p.defaults = { ...p.defaults, ...patch.defaults };
+    }
     if (patch.webcam) {
       const { rect } = patch.webcam;
       const next = rect ? { rect, confidence: 1, source: "manual" as const } : { rect: null, confidence: 0, source: "none" as const };
@@ -393,9 +657,11 @@ export async function patchProject(id: string, patch: ProjectPatch): Promise<Pro
     }
     if (patch.applyDefaultsToClips) {
       for (const clip of p.clips) {
-        if (!settingsDiffer(clip.settings, p.defaults)) continue;
+        const settings = concreteSettings(p, { ...p.defaults });
+        if (!settingsDiffer(clip.settings, settings)) continue;
         invalidateRender(clip, stale);
-        clip.settings = { ...p.defaults };
+        if (framingDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
+        clip.settings = settings;
       }
     }
   });
@@ -479,7 +745,7 @@ const STAGES: Record<StageId, (ctx: StageContext) => Promise<StageResult>> = {
     const transcript = await transcribe(
       paths.audio,
       { language: project.options.language, duration: source.duration },
-      (progress) => report(0.03 + 0.92 * progress, "Transcribing"),
+      (progress, message) => report(0.03 + 0.92 * progress, message ?? "Transcribing"),
       signal,
     );
     report(0.95, "Measuring loudness");
@@ -517,12 +783,12 @@ const STAGES: Record<StageId, (ctx: StageContext) => Promise<StageResult>> = {
       }
     }
     return {
-      message: `${picks.length} clips (${result.engine})`,
+      message: `${picks.length} clips (${result.engine}${result.requestedClips === null ? ", auto" : ""})`,
       commit(p) {
         const removed = replaceGeneratedClips(p, picks, result.engine);
         p.highlightEngine = result.engine;
         replaceWarnings(p, [WARNING_PREFIX.highlights], warnings);
-        return removed.map((clip) => clip.render.file);
+        return removed.flatMap((clip) => [clip.render.file, clip.thumbnail.file]);
       },
     };
   },
@@ -602,8 +868,9 @@ export async function runPipeline(id: string, opts: PipelineOptions = {}, signal
 // Rendering
 // ---------------------------------------------------------------------------------------------
 
-function clipFileName(clip: Clip): string {
-  const slug = clip.title
+/** Lowercase ASCII slug of a clip title, shared by the rendered short and its cover image file names. */
+function clipSlug(title: string): string {
+  return title
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
@@ -611,7 +878,14 @@ function clipFileName(clip: Clip): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
-  return `${clip.id}-${slug || "clip"}.mp4`;
+}
+
+function clipFileName(clip: Clip): string {
+  return `${clip.id}-${clipSlug(clip.title) || "clip"}.mp4`;
+}
+
+function thumbnailFileName(clip: Clip): string {
+  return `${clip.id}-${clipSlug(clip.title) || "clip"}.jpg`;
 }
 
 export async function renderProjectClip(id: string, clipId: string, signal?: AbortSignal): Promise<Project> {
@@ -660,6 +934,7 @@ async function renderClipUnmarked(id: string, clipId: string, signal?: AbortSign
         webcam: started.webcam.rect,
         words,
         outPath,
+        assetsDir: assetsDir(id),
       },
       (progress) =>
         push((p) => {
@@ -682,7 +957,9 @@ async function renderClipUnmarked(id: string, clipId: string, signal?: AbortSign
       }
     });
     if (orphaned) await rm(outPath, { force: true });
-    return done;
+    const target = done.clips.find((candidate) => candidate.id === clipId);
+    if (!target || target.thumbnail.file) return done;
+    return (await addThumbnailAfterRender(id, clipId, signal)) ?? done;
   } catch (error) {
     await push.flush();
     const aborted = signal?.aborted ?? false;
@@ -694,5 +971,144 @@ async function renderClipUnmarked(id: string, clipId: string, signal?: AbortSign
       if (target) target.render = aborted ? { status: "idle", progress: 0 } : { status: "error", progress: 0, error: message };
     }).catch(() => {});
     throw aborted ? signal?.reason : error;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Thumbnails
+// ---------------------------------------------------------------------------------------------
+
+const CANDIDATE_COUNT = 6;
+
+/** Good cover frames per clip; keyed by everything that changes the suggestion. */
+const candidateCache = new Map<string, ThumbnailCandidate[]>();
+
+function candidateKey(project: Project, clip: Clip): string {
+  return [project.id, clip.id, clip.start, clip.end, JSON.stringify(project.webcam.rect)].join("|");
+}
+
+/** Forgets the cached suggestions of a project's clips (called when the project is deleted). */
+export function forgetThumbnailCandidates(projectId: string): void {
+  for (const key of candidateCache.keys()) if (key.startsWith(`${projectId}|`)) candidateCache.delete(key);
+}
+
+async function resolveCandidates(project: Project, clip: Clip, signal?: AbortSignal): Promise<ThumbnailCandidate[]> {
+  const key = candidateKey(project, clip);
+  const cached = candidateCache.get(key);
+  if (cached) return cached;
+  if (!project.source) throw new ConflictError("The source video is not downloaded yet");
+  const paths = projectPaths(project.id);
+  const loudnessFile = Bun.file(paths.loudness);
+  const loudness = (await loudnessFile.exists()) ? ((await loudnessFile.json()) as LoudnessEnvelope) : null;
+  const candidates = await suggestThumbnailTimes(
+    {
+      sourcePath: paths.source,
+      source: { width: project.source.width, height: project.source.height, duration: project.source.duration },
+      start: clip.start,
+      end: clip.end,
+      webcam: project.webcam.rect,
+      loudness,
+    },
+    CANDIDATE_COUNT,
+    signal,
+  );
+  candidateCache.set(key, candidates);
+  return candidates;
+}
+
+export async function thumbnailCandidates(id: string, clipId: string, signal?: AbortSignal): Promise<ThumbnailCandidate[]> {
+  const project = await getProject(id);
+  return resolveCandidates(project, findClip(project, clipId), signal);
+}
+
+/** Writes the cover image of one clip now (about a second) and stores its file name, time and timestamp. */
+export async function generateThumbnail(id: string, clipId: string, signal?: AbortSignal): Promise<Project> {
+  const release = await markBusy(id);
+  try {
+    return await generateThumbnailUnmarked(id, clipId, signal);
+  } finally {
+    await release();
+  }
+}
+
+async function generateThumbnailUnmarked(id: string, clipId: string, signal?: AbortSignal): Promise<Project> {
+  const paths = projectPaths(id);
+  const project = await getProject(id);
+  const clip = findClip(project, clipId);
+  const { source } = project;
+  if (!source) throw new ConflictError("The source video is not downloaded yet");
+  const time =
+    clip.thumbnail.time ??
+    (await resolveCandidates(project, clip, signal))[0]?.time ??
+    clampFrameTime((clip.start + clip.end) / 2, source.duration);
+  const rendered = {
+    start: clip.start,
+    end: clip.end,
+    layout: clip.settings.layout,
+    focusX: clip.settings.focusX,
+    custom: JSON.stringify(clip.settings.custom),
+    thumbnail: JSON.stringify(clip.thumbnail),
+  };
+  const fileName = thumbnailFileName(clip);
+  const outPath = join(paths.clipsDir, fileName);
+  await mkdir(paths.clipsDir, { recursive: true });
+  await renderThumbnail(
+    {
+      sourcePath: paths.source,
+      source: { width: source.width, height: source.height },
+      time,
+      settings: { layout: clip.settings.layout, focusX: clip.settings.focusX, custom: clip.settings.custom },
+      webcam: project.webcam.rect,
+      text: clip.thumbnail.text ?? clip.title,
+      style: clip.thumbnail.style,
+      textY: clip.thumbnail.textY,
+      outPath,
+      assetsDir: assetsDir(id),
+    },
+    signal,
+  );
+
+  let staleFile: string | undefined;
+  let updated: Project;
+  try {
+    updated = await updateProject(id, (p) => {
+      const target = p.clips.find((candidate) => candidate.id === clipId);
+      if (!target) return;
+      // Someone edited the clip while the frame was rendering: the image no longer matches the clip.
+      const unchanged =
+        target.start === rendered.start &&
+        target.end === rendered.end &&
+        target.settings.layout === rendered.layout &&
+        target.settings.focusX === rendered.focusX &&
+        JSON.stringify(target.settings.custom) === rendered.custom &&
+        JSON.stringify(target.thumbnail) === rendered.thumbnail;
+      if (!unchanged) return;
+      if (target.thumbnail.file && target.thumbnail.file !== fileName) staleFile = target.thumbnail.file;
+      target.thumbnail = { ...target.thumbnail, file: fileName, generatedAt: new Date().toISOString(), usedTime: time };
+      replaceThumbnailWarning(p, clipId, null);
+    });
+  } catch (error) {
+    await rm(outPath, { force: true });
+    throw error;
+  }
+
+  const current = updated.clips.find((candidate) => candidate.id === clipId);
+  // Unless the stored thumbnail points at this very file (a concurrent run of ours), it is an orphan.
+  if (current?.thumbnail.file !== fileName) await rm(outPath, { force: true });
+  if (staleFile && staleFile !== fileName) await removeOutputs(id, [staleFile]);
+  return updated;
+}
+
+/**
+ * Generates the cover of a freshly rendered clip when it has none. A failure only adds a warning: the render
+ * itself already succeeded and must stay "done".
+ */
+async function addThumbnailAfterRender(id: string, clipId: string, signal?: AbortSignal): Promise<Project | null> {
+  try {
+    return await generateThumbnailUnmarked(id, clipId, signal);
+  } catch (error) {
+    if (signal?.aborted) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    return await updateProject(id, (p) => replaceThumbnailWarning(p, clipId, message)).catch(() => null);
   }
 }

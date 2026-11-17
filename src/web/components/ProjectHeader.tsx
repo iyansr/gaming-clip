@@ -98,14 +98,17 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
 function FindMoments({ project, disabled, applyProject }: { project: Project; disabled: boolean; applyProject: (p: Project) => void }) {
   const toast = useToast();
   const dialog = useRef<HTMLDialogElement>(null);
-  const [count, setCount] = useState(String(project.options.clipCount));
+  const [autoCount, setAutoCount] = useState(project.options.clipCount === null);
+  const [count, setCount] = useState(project.options.clipCount === null ? "8" : String(project.options.clipCount));
   const [min, setMin] = useState(String(project.options.minDuration));
   const [max, setMax] = useState(String(project.options.maxDuration));
   const [busy, setBusy] = useState(false);
   const replaced = project.clips.filter((c) => c.source !== "manual").length;
 
   const open = () => {
-    setCount(String(project.options.clipCount));
+    const current = project.options.clipCount;
+    setAutoCount(current === null);
+    setCount(current === null ? "8" : String(current));
     setMin(String(project.options.minDuration));
     setMax(String(project.options.maxDuration));
     dialog.current?.showModal();
@@ -115,7 +118,7 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
     setBusy(true);
     try {
       applyProject(
-        await api.rerun(project.id, "highlights", { clipCount: Number(count), minDuration: Number(min), maxDuration: Number(max) }),
+        await api.rerun(project.id, "highlights", { clipCount: autoCount ? null : Number(count), minDuration: Number(min), maxDuration: Number(max) }),
       );
       dialog.current?.close();
     } catch (e) {
@@ -145,10 +148,24 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
             {replaced > 0 ? ` (${replaced} clip${replaced === 1 ? "" : "s"}), including your trims and settings on them` : ""}. Manual clips are kept.
           </p>
           <div className="grid grid-cols-3 gap-2">
-            <label className="flex flex-col gap-1 text-xs text-zinc-400">
-              Clips
-              <input type="number" min={1} max={50} value={count} onChange={(e) => setCount(e.target.value)} className={inputClass} required />
-            </label>
+            <div className="flex flex-col gap-1 text-xs text-zinc-400">
+              <span>Clips</span>
+              <input
+                type="number"
+                min={1}
+                max={60}
+                value={count}
+                onChange={(e) => setCount(e.target.value)}
+                disabled={autoCount}
+                required={!autoCount}
+                aria-label="Clips"
+                className={`${inputClass}${autoCount ? " opacity-40" : ""}`}
+              />
+              <label className="flex items-center gap-1 whitespace-nowrap text-zinc-300">
+                <input type="checkbox" checked={autoCount} onChange={(e) => setAutoCount(e.target.checked)} />
+                Auto
+              </label>
+            </div>
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
               Min (s)
               <input type="number" min={3} value={min} onChange={(e) => setMin(e.target.value)} className={inputClass} required />

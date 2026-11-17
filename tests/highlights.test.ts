@@ -32,7 +32,7 @@ async function run(
   loudness: LoudnessEnvelope,
   duration: number,
   opts: ProjectOptions,
-): Promise<{ engine: string; candidates: HighlightCandidate[]; warnings: string[] }> {
+): Promise<{ engine: string; candidates: HighlightCandidate[]; warnings: string[]; requestedClips: number | null }> {
   return findHighlights({ transcript: transcript(segments), loudness, duration, title: "Test video", options: opts });
 }
 
@@ -125,6 +125,53 @@ describe("heuristic highlights", () => {
     const result = await run([], envelope(400, bursts), 400, options({ clipCount: 2 }));
     expect(result.candidates).toHaveLength(2);
     expect(result.candidates[0]!.score).toBe(95);
+  });
+
+  test("auto keeps about the two bursts of a flat video instead of filling the target", async () => {
+    const bursts = [
+      { at: 120, seconds: 3, db: -10 },
+      { at: 480, seconds: 3, db: -10 },
+    ];
+    const result = await run([], envelope(600, bursts), 600, options({ clipCount: null }));
+    expect(result.requestedClips).toBeNull();
+    expect(result.candidates).toHaveLength(2);
+    for (const burst of bursts) {
+      expect(result.candidates.some((clip) => clip.start <= burst.at && clip.end >= burst.at)).toBe(true);
+    }
+  });
+
+  test("auto takes many moments on an eventful video, up to one per four minutes", async () => {
+    const bursts = Array.from({ length: 16 }, (_, index) => ({ at: 60 + index * 110, seconds: 3, db: -10 }));
+    const segments = bursts.map((burst) => ({ start: burst.at - 2, end: burst.at + 4, text: "oh my god that was insane" }));
+    const result = await run(segments, envelope(1800, bursts), 1800, options({ clipCount: null }));
+    // 16 equally strong moments: auto fills its cap instead of stopping at a fixed default.
+    expect(result.candidates.length).toBe(Math.ceil(1800 / 240));
+    for (const clip of result.candidates) expect(clip.end - clip.start).toBeLessThanOrEqual(60);
+  });
+
+  test("auto returns only a couple of clips on a dull video with no real peaks", async () => {
+    const step = 0.5;
+    const rms = Array.from({ length: 1800 / step }, (_, index) => -34 + ((index * 37) % 7));
+    const segments = [];
+    for (let start = 0; start < 1800; start += 8) {
+      segments.push({ start, end: start + 6, text: "we are walking around and looking at the map for a while now" });
+    }
+    const result = await run(segments, { step, rms }, 1800, options({ clipCount: null }));
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+    expect(result.candidates.length).toBeLessThanOrEqual(2);
+  });
+
+  test("a number still returns exactly min(N, available)", async () => {
+    const bursts = [
+      { at: 60, seconds: 3, db: -10 },
+      { at: 200, seconds: 3, db: -10 },
+      { at: 340, seconds: 3, db: -10 },
+    ];
+    const wide = await run([], envelope(400, bursts), 400, options({ clipCount: 5 }));
+    expect(wide.requestedClips).toBe(5);
+    expect(wide.candidates).toHaveLength(3);
+    const two = await run([], envelope(400, bursts), 400, options({ clipCount: 2 }));
+    expect(two.candidates).toHaveLength(2);
   });
 
   test("silent video with an empty transcript yields no candidates and a warning", async () => {

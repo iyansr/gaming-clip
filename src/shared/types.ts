@@ -69,16 +69,49 @@ export interface Webcam {
 
 /**
  * How the 16:9 source is reframed into the vertical short.
- * - split: webcam panel on top, gameplay crop below (falls back to `fill` without a webcam rect)
- * - fill:  gameplay cropped to fill the whole frame
- * - fit:   whole source frame centered over a blurred copy of itself
+ * - split:  webcam panel on top, gameplay crop below (falls back to `fill` without a webcam rect)
+ * - fill:   gameplay cropped to fill the whole frame
+ * - fit:    whole source frame centered over a blurred copy of itself
+ * - custom: free-form `ClipSettings.custom` (gameplay and webcam placed anywhere, styled webcam, chosen background)
  */
-export type LayoutMode = "split" | "fill" | "fit";
+export type LayoutMode = "split" | "fill" | "fit" | "custom";
+
+/** Base canvas behind the custom layout's elements. */
+export type LayoutBackground =
+  | { kind: "blur" }
+  | { kind: "color"; color: string }
+  /** `file` is a basename inside the project's assets directory (uploaded by the user). */
+  | { kind: "image"; file: string };
+
+/** One piece of the source placed on the output: `src` in source pixels, `dst` in output pixels (may reach past the frame edges). */
+export interface LayoutElement {
+  src: Rect;
+  dst: Rect;
+}
+
+export interface CamElement extends LayoutElement {
+  /** Soft edge width in output px (0 = hard edge). */
+  feather: number;
+  /** Corner radius in output px (half the shorter side = circle/pill). */
+  radius: number;
+  /** Border width in output px (0 = none) and its colour (#rrggbb). */
+  border: number;
+  borderColor: string;
+}
+
+export interface CustomLayout {
+  background: LayoutBackground;
+  /** Null hides the element. Painted in this order: background, game, cam. */
+  game: LayoutElement | null;
+  cam: CamElement | null;
+}
 
 export interface ClipSettings {
   layout: LayoutMode;
-  /** 0..1 horizontal focus of the gameplay crop; 0.5 = centered. */
+  /** 0..1 horizontal focus of the gameplay crop; 0.5 = centered. Not used by `custom`. */
   focusX: number;
+  /** Free-form layout; used when `layout` is "custom", kept (but ignored) otherwise so switching back restores it. */
+  custom: CustomLayout | null;
   subtitles: boolean;
   /** Id of a preset in CAPTION_STYLES (src/shared/captions.ts). */
   captionStyle: string;
@@ -99,6 +132,23 @@ export interface ClipRender {
   renderedAt?: string;
 }
 
+/** Cover image of a clip: one reframed source frame with a headline, 1080x1920 JPEG. */
+export interface ClipThumbnail {
+  /** Source time of the frame; null = pick automatically (sharp frame near the clip's loudest moment). */
+  time: number | null;
+  /** Headline; `*word*` marks accent words; "" = no text; null = use the clip title. */
+  text: string | null;
+  /** Id of a preset in THUMBNAIL_STYLES (src/shared/thumbnail.ts). */
+  style: string;
+  /** 0..1 vertical center of the headline in the output frame. */
+  textY: number;
+  /** File name inside the project's clips directory, set once generated; cleared by any change that affects it. */
+  file?: string;
+  generatedAt?: string;
+  /** Source time the generated file shows (the resolved value when `time` is null). */
+  usedTime?: number;
+}
+
 export interface Clip {
   id: string;
   start: number;
@@ -113,6 +163,7 @@ export interface Clip {
   selected: boolean;
   settings: ClipSettings;
   render: ClipRender;
+  thumbnail: ClipThumbnail;
 }
 
 export type StageId = "download" | "transcribe" | "highlights" | "webcam";
@@ -130,8 +181,11 @@ export interface StageState {
 export interface ProjectOptions {
   /** Whisper language code or "auto". */
   language: string;
-  /** How many highlight candidates to propose. */
-  clipCount: number;
+  /**
+   * How many clips to propose. null = automatic: the engine decides from the content how many
+   * moments are worth posting (a long stream yields more, a dull one fewer). A number is a target.
+   */
+  clipCount: number | null;
   /** Clip length bounds in seconds. */
   minDuration: number;
   maxDuration: number;
@@ -161,7 +215,7 @@ export interface Project {
 
 export const DEFAULT_OPTIONS: ProjectOptions = {
   language: "auto",
-  clipCount: 8,
+  clipCount: null,
   minDuration: 20,
   maxDuration: 60,
 };
@@ -169,9 +223,17 @@ export const DEFAULT_OPTIONS: ProjectOptions = {
 export const DEFAULT_CLIP_SETTINGS: ClipSettings = {
   layout: "split",
   focusX: 0.5,
+  custom: null,
   subtitles: true,
   captionStyle: "pop",
   captionY: 0.7,
+};
+
+export const DEFAULT_THUMBNAIL: ClipThumbnail = {
+  time: null,
+  text: null,
+  style: "impact",
+  textY: 0.72,
 };
 
 /** Output format of every rendered short. */

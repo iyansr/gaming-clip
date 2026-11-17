@@ -156,7 +156,8 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
   const [text, setText] = useState("");
   const [language, setLanguage] = useState(DEFAULT_OPTIONS.language);
   const [custom, setCustom] = useState("");
-  const [clipCount, setClipCount] = useState(String(DEFAULT_OPTIONS.clipCount));
+  const [autoClips, setAutoClips] = useState(DEFAULT_OPTIONS.clipCount === null);
+  const [clipCount, setClipCount] = useState("8");
   const [minDuration, setMinDuration] = useState(String(DEFAULT_OPTIONS.minDuration));
   const [maxDuration, setMaxDuration] = useState(String(DEFAULT_OPTIONS.maxDuration));
   const [busy, setBusy] = useState(false);
@@ -177,7 +178,7 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
     try {
       const created = await api.createProjects(inputs, {
         language: lang,
-        clipCount: Number(clipCount),
+        clipCount: autoClips ? null : Number(clipCount),
         minDuration: Number(minDuration),
         maxDuration: Number(maxDuration),
       });
@@ -190,6 +191,29 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
       setBusy(false);
     }
   };
+
+  const clipField = (
+    <div className="flex flex-col gap-1 text-xs text-zinc-400">
+      <span>Clips to find</span>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          min={1}
+          max={60}
+          value={clipCount}
+          onChange={(e) => setClipCount(e.target.value)}
+          disabled={autoClips}
+          required={!autoClips}
+          aria-label="Clips to find"
+          className={cn(inputClass, autoClips && "opacity-40")}
+        />
+        <label className="flex items-center gap-1 whitespace-nowrap text-zinc-300">
+          <input type="checkbox" checked={autoClips} onChange={(e) => setAutoClips(e.target.checked)} />
+          Auto
+        </label>
+      </div>
+    </div>
+  );
 
   return (
     <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4" aria-label="New project">
@@ -223,17 +247,9 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
             <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="fr" className={inputClass} required />
           </label>
         ) : (
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            Clips to find
-            <input type="number" min={1} max={50} value={clipCount} onChange={(e) => setClipCount(e.target.value)} className={inputClass} required />
-          </label>
+          clipField
         )}
-        {language === OTHER && (
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            Clips to find
-            <input type="number" min={1} max={50} value={clipCount} onChange={(e) => setClipCount(e.target.value)} className={inputClass} required />
-          </label>
-        )}
+        {language === OTHER && clipField}
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           Min clip (s)
           <input type="number" min={3} value={minDuration} onChange={(e) => setMinDuration(e.target.value)} className={inputClass} required />

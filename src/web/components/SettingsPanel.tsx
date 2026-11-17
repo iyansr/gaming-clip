@@ -5,9 +5,12 @@ import { OUTPUT_SIZE, type Clip, type ClipSettings, type LayoutMode, type Projec
 import { api } from "../lib/api";
 import { cn, fmtSeconds, parseTime, round2, validateRange } from "../lib/format";
 import type { ClipEdit } from "../lib/hooks";
+import type { CustomUi } from "../lib/custom";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
 import { CaptionGallery } from "./CaptionGallery";
+import { CustomLayoutPanel } from "./CustomLayoutPanel";
+import { ThumbnailPanel, type CandidateState } from "./ThumbnailEditor";
 import { Button, inputClass, Panel } from "./ui";
 
 interface Props {
@@ -18,15 +21,21 @@ interface Props {
   edit: (clipId: string, patch: ClipEdit, immediate?: boolean) => void;
   flushAll: () => Promise<void>;
   applyProject: (p: Project) => void;
+  candidates: CandidateState;
+  onShowThumbnail: () => void;
+  /** Switch the preview column back to the live canvas (where the layout boxes are). */
+  onShowPreview: () => void;
   onOpenWebcam: () => void;
   onDeleteClip: (clip: Clip) => void;
+  customUi: CustomUi;
+  onCustomUiChange: (ui: CustomUi) => void;
 }
 
 const NUDGE = 0.5;
 
 const intersects = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
-export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAll, applyProject, onOpenWebcam, onDeleteClip }: Props) {
+export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAll, applyProject, candidates, onShowThumbnail, onShowPreview, onOpenWebcam, onDeleteClip, customUi, onCustomUiChange }: Props) {
   const toast = useToast();
   const [trimError, setTrimError] = useState<string | null>(null);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
@@ -37,6 +46,11 @@ export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAl
   const hasWebcam = project.webcam.rect !== null;
 
   const setSettings = (settings: Partial<ClipSettings>, immediate = false) => edit(clip.id, { settings }, immediate);
+
+  const select = (layout: LayoutMode) => {
+    setSettings({ layout }, true);
+    if (layout === "custom") onShowPreview();
+  };
 
   /** The server trims titles and rejects blank ones, so only commit a trimmed non-blank title. */
   const commitTitle = () => {
@@ -144,9 +158,9 @@ export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAl
 
         <Panel title="Layout">
           <div className="flex flex-col gap-3 p-3">
-            <div role="radiogroup" aria-label="Layout" className="grid grid-cols-3 gap-2">
-              {(["split", "fill", "fit"] as const).map((mode) => (
-                <LayoutOption key={mode} mode={mode} selected={s.layout === mode} onSelect={() => setSettings({ layout: mode }, true)} />
+            <div role="radiogroup" aria-label="Layout" className="grid grid-cols-4 gap-2">
+              {(["split", "fill", "fit", "custom"] as const).map((mode) => (
+                <LayoutOption key={mode} mode={mode} selected={s.layout === mode} onSelect={() => select(mode)} />
               ))}
             </div>
             {s.layout === "split" && !hasWebcam && (
@@ -157,26 +171,39 @@ export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAl
                 </button>
               </p>
             )}
-            <label className="flex flex-col gap-1 text-xs text-zinc-400">
-              <span className="flex justify-between">
-                <span className="flex items-center gap-1">
-                  <Crosshair className="size-3.5" aria-hidden /> Focus X
-                </span>
-                <span className="text-zinc-200 tabular-nums">{Math.round(s.focusX * 100)}%</span>
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={s.focusX}
-                disabled={s.layout === "fit"}
-                onChange={(e) => setSettings({ focusX: Number(e.target.value) })}
+            {s.layout === "custom" ? (
+              <CustomLayoutPanel
+                project={project}
+                clip={clip}
+                player={player}
+                ui={customUi}
+                onUiChange={onCustomUiChange}
+                edit={edit}
+                onApplyAll={() => void applyAll()}
+                applying={applying}
               />
-              {s.layout === "fit" && <span className="text-zinc-500">Fit shows the whole frame; focus is not used.</span>}
-            </label>
-            {camVisible && (
-              <p className="text-xs text-amber-300">The webcam is visible in the gameplay area. Moving focus X can slide it out.</p>
+            ) : (
+              <>
+                <label className="flex flex-col gap-1 text-xs text-zinc-400">
+                  <span className="flex justify-between">
+                    <span className="flex items-center gap-1">
+                      <Crosshair className="size-3.5" aria-hidden /> Focus X
+                    </span>
+                    <span className="text-zinc-200 tabular-nums">{Math.round(s.focusX * 100)}%</span>
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={s.focusX}
+                    disabled={s.layout === "fit"}
+                    onChange={(e) => setSettings({ focusX: Number(e.target.value) })}
+                  />
+                  {s.layout === "fit" && <span className="text-zinc-500">Fit shows the whole frame; focus is not used.</span>}
+                </label>
+                {camVisible && <p className="text-xs text-amber-300">The webcam is visible in the gameplay area. Moving focus X can slide it out.</p>}
+              </>
             )}
           </div>
         </Panel>
@@ -219,6 +246,18 @@ export function SettingsPanel({ project, clip, player, fontsReady, edit, flushAl
           </div>
         </Panel>
       </fieldset>
+
+      <ThumbnailPanel
+        project={project}
+        clip={clip}
+        player={player}
+        fontsReady={fontsReady}
+        candidates={candidates}
+        edit={edit}
+        flushAll={flushAll}
+        applyProject={applyProject}
+        onShow={onShowThumbnail}
+      />
 
       <Button variant="secondary" onClick={() => void applyAll()} disabled={applying || locked} className="w-full">
         {applying ? "Applying..." : "Apply these settings to all clips"}
@@ -287,8 +326,8 @@ function TrimRow({
 }
 
 function LayoutOption({ mode, selected, onSelect }: { mode: LayoutMode; selected: boolean; onSelect: () => void }) {
-  const names: Record<LayoutMode, string> = { split: "Split", fill: "Fill", fit: "Fit" };
-  const hints: Record<LayoutMode, string> = { split: "Webcam on top", fill: "Crop to fill", fit: "Whole frame" };
+  const names: Record<LayoutMode, string> = { split: "Split", fill: "Fill", fit: "Fit", custom: "Custom" };
+  const hints: Record<LayoutMode, string> = { split: "Webcam on top", fill: "Crop to fill", fit: "Whole frame", custom: "Free-form" };
   return (
     <button
       type="button"
@@ -313,6 +352,13 @@ function LayoutOption({ mode, selected, onSelect }: { mode: LayoutMode; selected
           <>
             <rect x="2" y="2" width="32" height="60" rx="2" fill="#3f3f6e" />
             <rect x="2" y="23" width="32" height="18" fill="#6366f1" />
+          </>
+        )}
+        {mode === "custom" && (
+          <>
+            <rect x="2" y="2" width="32" height="60" rx="2" fill="#3f3f6e" />
+            <rect x="2" y="13" width="26" height="30" rx="2" fill="#6366f1" />
+            <circle cx="25" cy="48" r="8" fill="#f59e0b" stroke="#fde68a" strokeWidth="1.5" />
           </>
         )}
       </svg>

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import {
   DEFAULT_CLIP_SETTINGS,
   DEFAULT_OPTIONS,
+  DEFAULT_THUMBNAIL,
   STAGE_ORDER,
   type Project,
   type ProjectOptions,
@@ -22,6 +23,11 @@ export class ValidationError extends Error {
 /** The request is valid but clashes with current state (e.g. editing a clip that is rendering). HTTP 409. */
 export class ConflictError extends Error {
   override name = "ConflictError";
+}
+
+/** An upload exceeds its size limit. HTTP 413. */
+export class PayloadTooLargeError extends Error {
+  override name = "PayloadTooLargeError";
 }
 
 const ID_PATTERN = /^[a-z0-9]+$/;
@@ -100,7 +106,14 @@ export async function getProject(id: string): Promise<Project> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new NotFoundError(`Project not found: ${id}`);
     throw error;
   }
-  return JSON.parse(text) as Project;
+  const project = JSON.parse(text) as Project;
+  // Project files written before thumbnails existed have clips without one; before the custom layout, settings without `custom`.
+  project.defaults.custom ??= null;
+  for (const clip of project.clips) {
+    clip.thumbnail = { ...DEFAULT_THUMBNAIL, ...clip.thumbnail };
+    clip.settings.custom ??= null;
+  }
+  return project;
 }
 
 /** Newest first. Directories without a readable project.json are skipped. */

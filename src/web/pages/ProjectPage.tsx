@@ -3,6 +3,7 @@ import { Download, Film, Loader2, Play } from "lucide-react";
 import type { Clip, Project } from "../../shared/types";
 import { api, media } from "../lib/api";
 import { clamp, cn, floor1, fmtTime } from "../lib/format";
+import type { CustomUi } from "../lib/custom";
 import { useCaptionFonts, useClipEdits, useProjectStream, useTranscriptWords } from "../lib/hooks";
 import { Player } from "../lib/player";
 import { Link } from "../lib/router";
@@ -12,6 +13,7 @@ import { Preview, type PreviewMode } from "../components/Preview";
 import { ProjectHeader } from "../components/ProjectHeader";
 import { RenderBar } from "../components/RenderBar";
 import { SettingsPanel } from "../components/SettingsPanel";
+import { resolveThumbnailTime, useThumbnailCandidates } from "../components/ThumbnailEditor";
 import { Transcript } from "../components/Transcript";
 import { WebcamEditor } from "../components/WebcamEditor";
 import { Empty } from "../components/ui";
@@ -53,6 +55,7 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
   const [activeId, setActiveId] = useState<string | null>(null);
   const [view, setView] = useState<{ clipId: string; mode: PreviewMode } | null>(null);
   const [webcamOpen, setWebcamOpen] = useState(false);
+  const [customUi, setCustomUi] = useState<CustomUi>({ selected: "cam", lockAspect: true });
 
   const source = project.source;
   const ready = project.stages.download.status === "done" && source !== null;
@@ -70,6 +73,7 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
 
   const sorted = useMemo(() => sortClips(clips, sort), [clips, sort]);
   const active = clips.find((c) => c.id === activeId) ?? sorted[0] ?? null;
+  const candidates = useThumbnailCandidates(project, active?.id ?? null);
 
   const synced = useRef<string | null>(null);
   useEffect(() => {
@@ -223,6 +227,10 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
                       fontsReady={fonts.ready}
                       mode={activeView}
                       onModeChange={(mode) => setView({ clipId: active.id, mode })}
+                      thumbnailTime={resolveThumbnailTime(active, candidates)}
+                      customUi={customUi}
+                      onCustomUiChange={setCustomUi}
+                      onCustomChange={(custom) => edit(active.id, { settings: { custom } })}
                     />
                   </div>
                   <div className="min-w-0">
@@ -235,6 +243,11 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
                       edit={edit}
                       flushAll={flushAll}
                       applyProject={applyProject}
+                      candidates={candidates}
+                      onShowThumbnail={() => setView({ clipId: active.id, mode: "thumbnail" })}
+                      onShowPreview={() => setView({ clipId: active.id, mode: "preview" })}
+                      customUi={customUi}
+                      onCustomUiChange={setCustomUi}
                       onOpenWebcam={() => setWebcamOpen(true)}
                       onDeleteClip={(c) => void deleteClip(c)}
                     />
@@ -269,6 +282,16 @@ function RenderedGallery({ project, clips, onPlay }: { project: Project; clips: 
     <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2" aria-label="Rendered shorts">
       {clips.map((clip) => (
         <li key={clip.id} className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5">
+          {clip.thumbnail.file && (
+            <a href={media.clip(project.id, clip.thumbnail.file, true)} download title="Download the thumbnail" className="block">
+              <img
+                src={media.thumbnailFile(project.id, clip.thumbnail.file, clip.thumbnail.generatedAt)}
+                alt={`Thumbnail of ${clip.title}`}
+                loading="lazy"
+                className="aspect-[9/16] w-24 rounded border border-zinc-800 bg-zinc-950 object-cover"
+              />
+            </a>
+          )}
           <span className="line-clamp-2 text-sm font-medium">{clip.title}</span>
           <span className="text-xs text-zinc-400 tabular-nums">
             {fmtTime(clip.start)} - {fmtTime(clip.end)} · {(clip.end - clip.start).toFixed(0)}s

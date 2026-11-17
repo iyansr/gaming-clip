@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle2, Captions, Loader2, Plus } from "lucide-react";
+import { AlertCircle, CheckCircle2, Captions, ImageIcon, Loader2, Plus } from "lucide-react";
 import type { Clip, ClipSource, Project } from "../../shared/types";
 import { cn, fmtTime } from "../lib/format";
 import { Badge, Button, Empty, ProgressBar } from "./ui";
@@ -48,12 +48,19 @@ export function ClipList({ project, clips, activeId, sort, onSortChange, onActiv
           ))}
         </div>
         <span className="flex-1" />
-        <Button variant="ghost" small onClick={() => onSelectAll(true)} disabled={clips.length === 0 || selectedCount === clips.length}>
+        <label className={cn("flex items-center gap-1.5 text-xs text-zinc-300", clips.length === 0 ? "cursor-not-allowed opacity-45" : "cursor-pointer")}>
+          <input
+            type="checkbox"
+            ref={(el) => {
+              if (el) el.indeterminate = selectedCount > 0 && selectedCount < clips.length;
+            }}
+            checked={clips.length > 0 && selectedCount === clips.length}
+            disabled={clips.length === 0}
+            onChange={() => onSelectAll(selectedCount < clips.length)}
+            className="size-4"
+          />
           All
-        </Button>
-        <Button variant="ghost" small onClick={() => onSelectAll(false)} disabled={selectedCount === 0}>
-          None
-        </Button>
+        </label>
         <Button variant="secondary" small onClick={onAdd} title="Add a 30 s clip at the playhead">
           <Plus className="size-3.5" aria-hidden /> Add
         </Button>
@@ -127,6 +134,11 @@ function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: 
             <Captions className={cn("size-3.5", clip.settings.subtitles ? "text-indigo-300" : "text-zinc-600")} aria-hidden />
             {clip.settings.subtitles ? clip.settings.captionStyle : "off"}
           </span>
+          {clip.thumbnail.file && (
+            <span className="inline-flex items-center gap-1" title="Thumbnail generated">
+              <ImageIcon className="size-3.5 text-indigo-300" aria-hidden /> cover
+            </span>
+          )}
         </span>
         {clip.reason && <span className="line-clamp-2 text-xs leading-snug text-zinc-400">{clip.reason}</span>}
         {(r.status === "queued" || r.status === "rendering") && (
