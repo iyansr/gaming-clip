@@ -22,6 +22,9 @@ function clipCurve(k: number): Float32Array<ArrayBuffer> {
   return curve;
 }
 
+/** The renderer's earrape chain ends with `volume=-4dB` after its hard clip. */
+const EARRAPE_TRIM = 10 ** (-4 / 20);
+
 /**
  * Approximation of the renderer's voice filters on the video element's own audio. Presets that need a pitch change
  * (chipmunk, deep) are tonal stand-ins: the preview never changes the playback rate. The render is exact.
@@ -36,6 +39,7 @@ class VoiceChain {
   private readonly highpass: BiquadFilterNode;
   private readonly lowpass: BiquadFilterNode;
   private readonly ring: GainNode;
+  private readonly trim: GainNode;
   private readonly out: GainNode;
   private readonly ringDepth: GainNode;
   private readonly echoSend: GainNode;
@@ -55,6 +59,12 @@ class VoiceChain {
     this.highpass = new BiquadFilterNode(ctx, { type: "highpass", frequency: 10 });
     this.lowpass = new BiquadFilterNode(ctx, { type: "lowpass", frequency: 20000 });
     this.ring = ctx.createGain();
+    // Renderer parity: earrape ends in a hard clip at full scale, then -4 dB, and only then the item's volume. Without
+    // the clip the boosted shelves drive the signal far past 1, the output clips anyway, and volume changes nothing.
+    // A two-point curve is the identity inside [-1, 1]; the shaper clamps everything beyond to its ends.
+    const clipper = ctx.createWaveShaper();
+    clipper.curve = new Float32Array([-1, 1]);
+    this.trim = ctx.createGain();
     this.ringDepth = ctx.createGain();
     this.ringDepth.gain.value = 0;
     const carrier = ctx.createOscillator();
@@ -76,7 +86,9 @@ class VoiceChain {
     this.low.connect(this.high);
     this.high.connect(this.highpass);
     this.highpass.connect(this.lowpass);
-    this.lowpass.connect(this.ring);
+    this.lowpass.connect(clipper);
+    clipper.connect(this.trim);
+    this.trim.connect(this.ring);
     this.ring.connect(out);
     this.ring.connect(this.echoSend);
     this.echoSend.connect(delay);
@@ -101,6 +113,7 @@ class VoiceChain {
     if (preset === this.current) return;
     this.current = preset;
     this.set(this.pre.gain, preset === "earrape" ? 10 : 1);
+    this.set(this.trim.gain, preset === "earrape" ? EARRAPE_TRIM : 1);
     this.shaper.curve = preset === "earrape" ? clipCurve(3) : null;
     this.set(this.low.gain, preset === "earrape" ? 14 : preset === "bass" ? 15 : preset === "deep" ? 10 : 0);
     this.set(this.high.gain, preset === "chipmunk" ? 10 : preset === "earrape" ? 6 : 0);
