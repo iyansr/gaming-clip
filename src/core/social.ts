@@ -76,6 +76,8 @@ function languageName(code: string): string {
 
 export interface SocialInput {
   videoTitle: string;
+  /** Channel of the source video; usually the streamer in the clip. Empty for local files. */
+  channel: string;
   clipTitle: string;
   reason: string;
   /** Clip length in seconds. */
@@ -101,7 +103,7 @@ function socialFormat(): string {
     "Output format. These rules always apply and override anything above:",
     "Reply with exactly one JSON object and nothing else: no prose, no code fence, no comments. Use this shape:",
     '{"instagram":{"caption":string,"hashtags":string[]},"tiktok":{"caption":string,"hashtags":string[]},"youtube":{"title":string,"description":string,"hashtags":string[]}}',
-    'Hashtags are plain words without "#" and without spaces (letters, digits, underscore), most relevant first. Never put hashtags inside a caption, title or description.',
+    'Hashtags are plain words without "#" and without spaces (letters, digits, underscore), most relevant first. Never put hashtags inside a caption or description; only the youtube title may end with a few.',
     `instagram: caption at most ${instagram.total - 300} characters, ${instagram.hashtags.min} to ${instagram.hashtags.max} hashtags.`,
     `tiktok: caption at most ${tiktok.total - 300} characters (aim for under ${tiktok.aim}), ${tiktok.hashtags.min} to ${tiktok.hashtags.max} hashtags.`,
     `youtube: title at most ${youtube.title} characters on a single line, description at most ${youtube.description - 500} characters, exactly ${youtube.hashtags.max} hashtags and one of them is "${SHORTS_HASHTAG}".`,
@@ -114,6 +116,7 @@ export function socialMessages(input: SocialInput, guidance: string): ChatMessag
   const name = languageName(input.language);
   const facts = [
     `Video title: ${input.videoTitle || "(unknown)"}`,
+    `Channel (usually the streamer): ${input.channel || "(unknown)"}`,
     `Clip title: ${input.clipTitle || "(none)"}`,
     `Why it was picked: ${input.reason || "(not given)"}`,
     `Clip length: ${Math.round(input.duration)} seconds`,
@@ -163,6 +166,11 @@ function withoutTrailingHashtags(text: string): string {
     .split("\n")
     .map((line) => line.replace(TRAILING_HASHTAGS, ""))
     .join("\n");
+}
+
+/** Source credit line added to the YouTube description; only for videos that came from a URL. */
+export function sourceCredit(input: string | undefined): string {
+  return input && /^https?:\/\//i.test(input) ? `SC: ${input}` : "";
 }
 
 function field(record: Record<string, unknown>, key: string, what: string): string {
@@ -215,9 +223,10 @@ function youtubeHashtags(own: string[], pool: string[]): string[] {
 /**
  * Validates and clamps the model's JSON: required strings, limits per platform (text + hashtags within the
  * platform's total), 3-8 / 3-6 / 3 hashtags (short lists are topped up from the other platforms' tags),
- * hashtags sanitised and de-duplicated, `Shorts` always on YouTube. Throws SocialFormatError for unusable answers.
+ * hashtags sanitised and de-duplicated, `Shorts` always on YouTube, `credit` (when given) as the last line of the
+ * YouTube description. Throws SocialFormatError for unusable answers.
  */
-export function parseSocial(raw: unknown): SocialPosts {
+export function parseSocial(raw: unknown, credit = ""): SocialPosts {
   if (!isRecord(raw)) throw new SocialFormatError("the answer is not a JSON object");
   const parts = (["instagram", "tiktok", "youtube"] as const).map((key) => {
     const value = raw[key];
@@ -245,17 +254,16 @@ export function parseSocial(raw: unknown): SocialPosts {
   const tiktokTags = pickHashtags(own.tiktok, pool, SOCIAL_LIMITS.tiktok.hashtags);
   const youtubeTags = youtubeHashtags(own.youtube, pool);
 
-  const title = clampText(
-    withoutTrailingHashtags(field(youtube, "title", "youtube"))
-      .replace(/\s+/g, " ")
-      .trim(),
-    SOCIAL_LIMITS.youtube.title,
-  );
-  const description = clampWithHashtags(
+  // Clip channels end the title with the streamer's hashtags; keep them, on one line.
+  const title = clampText(field(youtube, "title", "youtube").replace(/\s+/g, " ").trim(), SOCIAL_LIMITS.youtube.title);
+  // The credit is appended after clamping so a long description can never cut it off.
+  const reserved = credit ? credit.length + 2 : 0;
+  const body = clampWithHashtags(
     cleanBody(field(youtube, "description", "youtube")),
     youtubeTags,
-    SOCIAL_LIMITS.youtube.description,
+    SOCIAL_LIMITS.youtube.description - reserved,
   );
+  const description = credit ? (body ? `${body}\n\n${credit}` : credit) : body;
   if (title === "") throw new SocialFormatError("youtube title is empty");
   const youtubePost: YoutubeShortPost = { title, description, hashtags: youtubeTags };
   return {
@@ -311,6 +319,7 @@ export async function generateSocial(
     const messages = socialMessages(
       {
         videoTitle: project.source?.title ?? "",
+        channel: project.source?.channel ?? "",
         clipTitle: clip.title,
         reason: clip.reason,
         duration: end - start,
@@ -325,7 +334,7 @@ export async function generateSocial(
     for (let attempt = 0; attempt < ATTEMPTS && !posts; attempt++) {
       signal?.throwIfAborted();
       try {
-        posts = parseSocial(await chatJson(messages, signal));
+        posts = parseSocial(await chatJson(messages, signal), sourceCredit(project.source?.input));
       } catch (error) {
         if (!(error instanceof SocialFormatError)) throw error;
         failure = error.message;

@@ -8,6 +8,7 @@ import {
   resolveLanguage,
   SocialFormatError,
   socialMessages,
+  sourceCredit,
   type SocialInput,
 } from "../src/core/social";
 import { postText, sanitizeHashtags, SOCIAL_LIMITS, youtubeDescriptionText } from "../src/shared/social";
@@ -95,7 +96,7 @@ describe("parseSocial", () => {
     }
   });
 
-  test("YouTube title is one line of at most 100 characters; description plus hashtags at most 5000", () => {
+  test("YouTube title is one line of at most 100 characters and keeps its hashtags; description plus hashtags at most 5000", () => {
     const posts = parseSocial(
       answer({
         youtube: {
@@ -107,8 +108,26 @@ describe("parseSocial", () => {
     );
     expect(posts.youtube.title.length).toBeLessThanOrEqual(100);
     expect(posts.youtube.title).not.toContain("\n");
-    expect(posts.youtube.title).not.toContain("#");
     expect(youtubeDescriptionText(posts.youtube).length).toBeLessThanOrEqual(5000);
+
+    const tagged = parseSocial(
+      answer({ youtube: { title: "SEBAIKNYA DIAM😹 | Momen Kocak\n#windah", description: "d", hashtags: ["windah"] } }),
+    );
+    expect(tagged.youtube.title).toBe("SEBAIKNYA DIAM😹 | Momen Kocak #windah");
+  });
+
+  test("the source credit is the last line of the YouTube description, even when the description is cut", () => {
+    const credit = sourceCredit("https://youtu.be/abc");
+    expect(credit).toBe("SC: https://youtu.be/abc");
+    expect(sourceCredit("/Users/me/video.mp4")).toBe("");
+
+    const posts = parseSocial(
+      answer({ youtube: { title: "t", description: "x".repeat(7000), hashtags: ["a1", "b1"] } }),
+      credit,
+    );
+    expect(posts.youtube.description.endsWith(`\n\n${credit}`)).toBe(true);
+    expect(youtubeDescriptionText(posts.youtube).length).toBeLessThanOrEqual(5000);
+    expect(parseSocial(answer()).youtube.description).toBe("A wild clutch.");
   });
 
   test("hashtags the model wrote into the caption are removed (they are stored separately)", () => {
@@ -131,6 +150,7 @@ describe("parseSocial", () => {
 describe("prompt structure", () => {
   const input: SocialInput = {
     videoTitle: "Valorant ranked #12",
+    channel: "Windah Basudara",
     clipTitle: "Ace on Ascent",
     reason: "5 kills in 12 seconds",
     duration: 24,
@@ -152,6 +172,7 @@ describe("prompt structure", () => {
     expect(text).toContain('one of them is "Shorts"');
     expect(text).toContain("Indonesian (id)");
     expect(text).toContain("gila dia kena semua");
+    expect(text).toContain("Channel (usually the streamer): Windah Basudara");
     // The format is the last thing the model reads.
     expect(text.trimEnd().endsWith("Escape quotes and line breaks inside JSON strings.")).toBe(true);
   });
