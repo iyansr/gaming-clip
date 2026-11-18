@@ -13,11 +13,35 @@ import {
 } from "../shared/captions";
 import { drawCamBorder, drawCamMask, type ComposeContext } from "../shared/compose";
 import { computeLayout, type LayoutLayer } from "../shared/layout";
-import { OUTPUT_SIZE, type ClipSettings, type Rect, type Watermark, type Word } from "../shared/types";
+import {
+  OUTPUT_SIZE,
+  type ClipSettings,
+  type ClipTimeline,
+  type Rect,
+  type Watermark,
+  type Word,
+} from "../shared/types";
 import { drawWatermarks, type WatermarkImages } from "../shared/watermark";
 import { BIN, FONTS_DIR } from "./config";
 import { videoEncoderArgs } from "./encoder";
 import { ExecError } from "./exec";
+import {
+  assembleBookends,
+  audioFxChains,
+  ffColor,
+  layoutFxChains,
+  overlayFxChains,
+  planAudioFx,
+  planVideoFx,
+  probeMedia,
+  requireLibraryFile,
+  tailOf,
+  teaserRange,
+  watchProgress,
+  type AudioFx,
+  type Bookends,
+  type VideoFx,
+} from "./fx";
 
 export interface RenderJob {
   sourcePath: string;
@@ -31,6 +55,10 @@ export interface RenderJob {
   outPath: string;
   /** Directory of the project's uploaded background images; needed when the layout uses one. */
   assetsDir?: string;
+  /** Editor timeline (SOURCE times, as stored on the clip); effects, overlays, sounds, voices and the teaser. */
+  timeline: ClipTimeline;
+  /** Media library directory; sounds, stickers, intro and outro are looked up here. */
+  libraryDir: string;
 }
 
 const { width: OUT_W, height: OUT_H } = OUTPUT_SIZE;
@@ -39,7 +67,8 @@ const STRIP_H = 480;
 const MAX_FPS = 60;
 const BLUR_DOWNSCALE = 8;
 const BLUR_SIGMA = 6;
-const STDERR_TAIL = 8 * 1024;
+/** Share of the progress bar the clip pass takes when a second pass (teaser, intro, outro) follows. */
+const MAIN_PASS_SHARE = 0.85;
 
 let fontsRegistered = false;
 /** Makes the bundled caption fonts available to every @napi-rs/canvas context in this process. */
@@ -100,6 +129,10 @@ interface GraphPlan {
   imageFile: string | null;
   /** Transparent 1080x1920 PNG with every watermark, overlaid after the layout layers and under the captions. */
   watermarkFile: string | null;
+  /** Timeline looks, zoom/shake, overlays and flashes (see fx.ts). */
+  fx: VideoFx;
+  /** Voice distortion and library sounds; null when the clip audio passes through untouched. */
+  audio: AudioFx | null;
 }
 
 function placeLayers(layers: LayoutLayer[], source: { width: number; height: number }): PlacedLayer[] {
@@ -128,19 +161,6 @@ function placeLayers(layers: LayoutLayer[], source: { width: number; height: num
     placed.push({ layer, src, dst, visible: { x, y, w, h } });
   }
   return placed;
-}
-
-/** `#rgb` / `#rrggbb` as an ffmpeg colour. */
-function ffColor(color: string): string {
-  const hex = color.slice(1);
-  return `0x${
-    hex.length === 3
-      ? hex
-          .split("")
-          .map((digit) => digit + digit)
-          .join("")
-      : hex
-  }`;
 }
 
 /** Draws a webcam PNG (mask or border) for the visible part of a layer's `dst`. */
@@ -177,7 +197,7 @@ export async function loadWatermarkImages(
 }
 
 /** Placement of the layout's layers plus the temporary images they need; every file written is listed in `scratch`. */
-async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Promise<GraphPlan> {
+export async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Promise<GraphPlan> {
   const layout = computeLayout(
     { width: job.source.width, height: job.source.height },
     job.webcam,
@@ -219,7 +239,11 @@ async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Pr
     scratch.push(watermarkFile);
     await Bun.write(watermarkFile, await canvas.encode("png"));
   }
-  return { layers, fill: layout.fill, imageFile, watermarkFile };
+  const clip = { start: job.start, end: job.end };
+  if (job.timeline.items.some((item) => item.kind === "overlay")) registerFonts();
+  const fx = await planVideoFx(job.timeline, clip, job.libraryDir, stem, scratch);
+  const audio = await planAudioFx(job.timeline, clip, job.sourcePath, job.libraryDir);
+  return { layers, fill: layout.fill, imageFile, watermarkFile, fx, audio };
 }
 
 /** Still-image inputs after the video (and caption pipe), in the order the graph refers to them. */
@@ -228,10 +252,17 @@ function extraFiles(plan: GraphPlan): string[] {
     plan.imageFile,
     ...plan.layers.flatMap((placed) => [placed.maskFile, placed.borderFile]),
     plan.watermarkFile,
+    ...plan.fx.overlays.map((overlay) => overlay.file),
   ].filter((file): file is string => file !== undefined && file !== null);
 }
 
-function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captions: { y: number } | null): string {
+/** The video filter graph; with an empty timeline it contains nothing but the layout, watermarks and captions. */
+export function buildFilterGraph(
+  plan: GraphPlan,
+  fps: string,
+  duration: number,
+  captions: { y: number } | null,
+): string {
   const chains: string[] = [];
   const { layers } = plan;
   const n = layers.length;
@@ -296,11 +327,17 @@ function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captio
       acc = `[ob${i}]`;
     }
   });
+  const layoutFx = layoutFxChains(plan.fx, acc);
+  chains.push(...layoutFx.chains);
+  acc = layoutFx.acc;
   if (plan.watermarkFile) {
     chains.push(`[${inputOf(plan.watermarkFile)}:v]scale=out_color_matrix=bt709,format=yuva420p[wm]`);
     chains.push(`${acc}[wm]overlay=0:0[ow]`);
     acc = "[ow]";
   }
+  const overlays = overlayFxChains(plan.fx, acc, fps, inputOf);
+  chains.push(...overlays.chains);
+  acc = overlays.acc;
   if (captions) {
     chains.push(`[1:v]scale=out_color_matrix=bt709,format=yuva420p[cap]`);
     chains.push(`${acc}[cap]overlay=0:${captions.y}[oc]`);
@@ -310,49 +347,19 @@ function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captio
   return chains.join(";");
 }
 
-async function tailOf(stream: ReadableStream<Uint8Array>): Promise<string> {
-  const decoder = new TextDecoder();
-  let kept = "";
-  for await (const chunk of stream) {
-    kept += decoder.decode(chunk, { stream: true });
-    if (kept.length > STDERR_TAIL * 2) kept = kept.slice(-STDERR_TAIL);
-  }
-  return kept.slice(-STDERR_TAIL);
-}
-
-async function watchProgress(stream: ReadableStream<Uint8Array>, duration: number, onProgress: (p: number) => void) {
-  const decoder = new TextDecoder();
-  let pending = "";
-  for await (const chunk of stream) {
-    pending += decoder.decode(chunk, { stream: true });
-    const lines = pending.split("\n");
-    pending = lines.pop() ?? "";
-    for (const line of lines) {
-      if (!line.startsWith("out_time_us=")) continue;
-      const us = Number(line.slice("out_time_us=".length));
-      if (Number.isFinite(us) && us >= 0) onProgress(Math.min(0.99, us / 1e6 / duration));
-    }
-  }
-}
-
-async function encode(
+/**
+ * ffmpeg arguments of the clip pass: source (seeked to the clip), caption pipe, stills, library sounds, the graph.
+ * Without a timeline audio plan the clip audio is mapped straight through, as before the editor existed.
+ */
+export function buildEncodeArgs(
   job: RenderJob,
   plan: GraphPlan,
-  tmpPath: string,
-  cues: CaptionCue[],
-  onProgress: (progress: number) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const videoArgs = await videoEncoderArgs();
+  strip: { y: number } | null,
+  fps: string,
+  videoArgs: string[],
+  outPath: string,
+): string[] {
   const duration = job.end - job.start;
-  const fps = frameRate(job.source.fps);
-
-  const captionY = Math.min(1, Math.max(0, job.settings.captionY)) * OUT_H;
-  const strip =
-    cues.length > 0
-      ? { y: Math.min(OUT_H - STRIP_H, Math.max(0, Math.round((captionY - STRIP_H / 2) / 2) * 2)) }
-      : null;
-
   const args = [
     "-y",
     "-hide_banner",
@@ -374,21 +381,27 @@ async function encode(
       "-video_size",
       `${OUT_W}x${STRIP_H}`,
       "-framerate",
-      fps.arg,
+      fps,
       "-i",
       "pipe:0",
     );
   }
-  // Stills (background image, webcam masks and borders) loop for the whole clip.
-  for (const file of extraFiles(plan))
-    args.push("-loop", "1", "-framerate", fps.arg, "-t", duration.toFixed(3), "-i", file);
+  // Stills (background image, webcam masks and borders) loop for the whole clip; an overlay's only for its item.
+  const stillLength = new Map(plan.fx.overlays.map(({ item, file }) => [file, item.end - item.start]));
+  const files = extraFiles(plan);
+  for (const file of files)
+    args.push("-loop", "1", "-framerate", fps, "-t", (stillLength.get(file) ?? duration).toFixed(3), "-i", file);
+  const { audio } = plan;
+  for (const sound of audio?.sounds ?? []) args.push("-i", sound.file);
+  const graph = buildFilterGraph(plan, fps, duration, strip);
+  const firstSoundInput = (strip ? 2 : 1) + files.length;
   args.push(
     "-filter_complex",
-    buildFilterGraph(plan, fps.arg, duration, strip),
+    audio ? [graph, ...audioFxChains(audio, duration, firstSoundInput)].join(";") : graph,
     "-map",
     "[vout]",
     "-map",
-    "0:a:0?",
+    audio ? "[aout]" : "0:a:0?",
     ...videoArgs,
     "-pix_fmt",
     "yuv420p",
@@ -396,6 +409,7 @@ async function encode(
     "aac",
     "-b:a",
     "160k",
+    ...(audio ? ["-ar", "48000", "-ac", "2"] : []),
     "-movflags",
     "+faststart",
     "-t",
@@ -403,8 +417,28 @@ async function encode(
     "-progress",
     "pipe:1",
     "-nostats",
-    tmpPath,
+    outPath,
   );
+  return args;
+}
+
+async function encode(
+  job: RenderJob,
+  plan: GraphPlan,
+  outPath: string,
+  cues: CaptionCue[],
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const duration = job.end - job.start;
+  const fps = frameRate(job.source.fps);
+
+  const captionY = Math.min(1, Math.max(0, job.settings.captionY)) * OUT_H;
+  const strip =
+    cues.length > 0
+      ? { y: Math.min(OUT_H - STRIP_H, Math.max(0, Math.round((captionY - STRIP_H / 2) / 2) * 2)) }
+      : null;
+  const args = buildEncodeArgs(job, plan, strip, fps.arg, await videoEncoderArgs(), outPath);
 
   const proc = Bun.spawn([BIN.ffmpeg, ...args], {
     stdin: strip ? "pipe" : "ignore",
@@ -470,8 +504,10 @@ async function encode(
 }
 
 /**
- * Render one clip to `job.outPath`: reframe to 1080x1920 per computeLayout, burn captions (drawn with
- * @napi-rs/canvas and piped to ffmpeg as raw RGBA, since this ffmpeg build has no subtitle/drawtext filters).
+ * Render one clip to `job.outPath`: reframe to 1080x1920 per computeLayout, apply the timeline (looks, zoom/shake,
+ * overlays, flashes, voice and sounds), burn captions (drawn with @napi-rs/canvas and piped to ffmpeg as raw RGBA,
+ * since this ffmpeg build has no subtitle/drawtext filters). A teaser, intro or outro makes a second pass that
+ * concatenates intro + teaser + clip + outro.
  */
 export async function renderClip(
   job: RenderJob,
@@ -481,6 +517,13 @@ export async function renderClip(
   validate(job);
   signal?.throwIfAborted();
   const cues = job.settings.subtitles ? buildCues(job.words, job.start, job.end, job.settings.captionStyle) : [];
+  const { intro, outro } = job.settings;
+  const introPath = intro ? await requireLibraryFile(job.libraryDir, intro, "The intro") : null;
+  const outroPath = outro ? await requireLibraryFile(job.libraryDir, outro, "The outro") : null;
+  // The teaser is a range of the finished clip, so it is cut from the main pass.
+  const teaser = teaserRange(job.timeline, { start: job.start, end: job.end });
+  const assemble = teaser !== null || introPath !== null || outroPath !== null;
+  const share = assemble ? MAIN_PASS_SHARE : 1;
 
   await mkdir(dirname(job.outPath), { recursive: true });
   const ext = extname(job.outPath) || ".mp4";
@@ -492,7 +535,29 @@ export async function renderClip(
   try {
     const plan = await planGraph(job, tmpPath, scratch);
     signal?.throwIfAborted();
-    await encode(job, plan, tmpPath, cues, onProgress, signal);
+    let mainPath = tmpPath;
+    if (assemble) {
+      mainPath = `${tmpPath.slice(0, tmpPath.length - ext.length)}.main${ext}`;
+      scratch.push(mainPath);
+    }
+    await encode(job, plan, mainPath, cues, (p) => onProgress(p * share), signal);
+    if (assemble) {
+      const bookends: Bookends = {
+        mainPath,
+        main: await probeMedia(mainPath),
+        teaser,
+        teaserOverlays: plan.fx.teaserOverlays,
+        intro: introPath ? { path: introPath, info: await probeMedia(introPath) } : null,
+        outro: outroPath ? { path: outroPath, info: await probeMedia(outroPath) } : null,
+      };
+      await assembleBookends(
+        bookends,
+        frameRate(job.source.fps).arg,
+        tmpPath,
+        (p) => onProgress(Math.min(0.99, share + (1 - share) * p)),
+        signal,
+      );
+    }
     await rename(tmpPath, job.outPath);
   } catch (err) {
     await rm(tmpPath, { force: true });

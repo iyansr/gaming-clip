@@ -16,6 +16,7 @@ import { cn, fmtSeconds, parseTime, round2, validateRange } from "../lib/format"
 import type { ClipEdit } from "../lib/hooks";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
+import { BookendsPanel } from "./BookendsPanel";
 import { CaptionGallery } from "./CaptionGallery";
 import { CustomLayoutPanel } from "./CustomLayoutPanel";
 import { SocialPanel } from "./SocialPanel";
@@ -133,7 +134,7 @@ export function SettingsPanel({
         </div>
       )}
       <fieldset disabled={locked} className="flex min-w-0 flex-col gap-3 disabled:opacity-60">
-        <Panel title="Clip">
+        <Panel title="Clip" collapsible>
           <div className="flex flex-col gap-3 p-3">
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
               Title
@@ -194,7 +195,7 @@ export function SettingsPanel({
           </div>
         </Panel>
 
-        <Panel title="Layout">
+        <Panel title="Layout" collapsible>
           <div className="flex flex-col gap-3 p-3">
             <div role="radiogroup" aria-label="Layout" className="grid grid-cols-4 gap-2">
               {(["split", "fill", "fit", "custom"] as const).map((mode) => (
@@ -256,7 +257,7 @@ export function SettingsPanel({
           </div>
         </Panel>
 
-        <Panel title="Subtitles">
+        <Panel title="Subtitles" collapsible defaultOpen={false}>
           <div className="flex flex-col gap-3 p-3">
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
@@ -308,6 +309,8 @@ export function SettingsPanel({
           applyProject={applyProject}
           onShowPreview={onShowPreview}
         />
+
+        <BookendsPanel clip={clip} edit={edit} />
       </fieldset>
 
       <ThumbnailPanel

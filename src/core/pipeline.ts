@@ -5,11 +5,13 @@ import { basename, join } from "node:path";
 import { loadImage } from "@napi-rs/canvas";
 
 import { CAPTION_FONTS, CAPTION_STYLES } from "../shared/captions";
+import { ITEM_LIMITS, MAX_TIMELINE_ITEMS, overlappingZooms, TEASER_LIMITS, ZOOM_LIMITS } from "../shared/effects";
 import { defaultCustomLayout } from "../shared/layout";
 import { THUMBNAIL_STYLES } from "../shared/thumbnail";
 import {
   DEFAULT_OPTIONS,
   DEFAULT_THUMBNAIL,
+  EMPTY_TIMELINE,
   OUTPUT_SIZE,
   STAGE_ORDER,
   type CamElement,
@@ -17,26 +19,32 @@ import {
   type ClipSettings,
   type ClipSource,
   type ClipThumbnail,
+  type ClipTimeline,
   type CustomLayout,
   type LayoutBackground,
   type LayoutElement,
   type LayoutMode,
+  type LibraryItem,
+  type LibraryKind,
   type LoudnessEnvelope,
   type Project,
   type ProjectOptions,
   type Rect,
   type SourceMeta,
   type StageId,
+  type TimelineItem,
   type Transcript,
+  type VoiceItem,
   type Webcam,
   type Watermark,
   type Word,
 } from "../shared/types";
 import { MAX_WATERMARKS } from "../shared/watermark";
 import { loudnessEnvelope } from "./audio";
-import { projectPaths, type ProjectPaths } from "./config";
+import { LIBRARY_DIR, projectPaths, type ProjectPaths } from "./config";
 import { fetchSource, probeMedia } from "./download";
 import { findHighlights } from "./highlights";
+import { libraryIndexSync, libraryPath } from "./library";
 import { renderClip } from "./render";
 import { getSettings } from "./settings";
 import {
@@ -115,6 +123,7 @@ export function makeClip(project: Project, fields: ClipFields, source: ClipSourc
     render: { status: "idle", progress: 0 },
     thumbnail: { ...DEFAULT_THUMBNAIL },
     social: null,
+    timeline: structuredClone(EMPTY_TIMELINE),
   };
 }
 
@@ -408,64 +417,68 @@ function parseColor(value: unknown, name: string): string {
   return value.toLowerCase();
 }
 
-/** Strict structure and range check of a watermark list (unknown keys rejected); uploaded files are checked by `checkWatermarks`. */
+/** Strict structure and range check of one watermark (unknown keys rejected); its file is checked by `checkWatermarks`. */
+function parseWatermark(entry: unknown, what: string): Watermark {
+  const obj = asObject(entry, what);
+  if (obj.kind !== "text" && obj.kind !== "image") throw new ValidationError(`${what}.kind must be "text" or "image"`);
+  rejectUnknownKeys(
+    obj,
+    [
+      ...WATERMARK_KEYS,
+      ...(obj.kind === "image" ? ["file", "width"] : ["text", "font", "size", "color", "stroke", "strokeColor"]),
+    ],
+    what,
+  );
+  if (typeof obj.id !== "string" || !WATERMARK_ID_PATTERN.test(obj.id))
+    throw new ValidationError(`${what}.id must be 4-12 lowercase letters or digits`);
+  if (typeof obj.onThumbnail !== "boolean") throw new ValidationError(`${what}.onThumbnail must be true or false`);
+  const base = {
+    id: obj.id,
+    x: numberInRange(obj.x, `${what}.x`, -OUTPUT_SIZE.width, 2 * OUTPUT_SIZE.width),
+    y: numberInRange(obj.y, `${what}.y`, -OUTPUT_SIZE.height, 2 * OUTPUT_SIZE.height),
+    rotation: numberInRange(obj.rotation, `${what}.rotation`, -180, 180),
+    opacity: numberInRange(obj.opacity, `${what}.opacity`, 0, 1),
+    onThumbnail: obj.onThumbnail,
+  };
+  if (obj.kind === "image") {
+    if (typeof obj.file !== "string" || !ASSET_NAME_PATTERN.test(obj.file))
+      throw new ValidationError(`${what}.file must be the file name returned by an upload`);
+    return {
+      ...base,
+      kind: "image",
+      file: obj.file,
+      width: numberInRange(obj.width, `${what}.width`, 16, 2 * OUTPUT_SIZE.width),
+    };
+  }
+  if (typeof obj.text !== "string" || obj.text.length < 1 || obj.text.length > WATERMARK_TEXT_LIMIT)
+    throw new ValidationError(`${what}.text must be 1-${WATERMARK_TEXT_LIMIT} characters`);
+  if (/[\r\n\u2028\u2029]/.test(obj.text)) throw new ValidationError(`${what}.text must be a single line`);
+  const families = CAPTION_FONTS.map((font) => font.family);
+  if (typeof obj.font !== "string" || !families.includes(obj.font))
+    throw new ValidationError(`${what}.font must be one of ${families.join(", ")}`);
+  return {
+    ...base,
+    kind: "text",
+    text: obj.text,
+    font: obj.font,
+    size: numberInRange(obj.size, `${what}.size`, 8, 400),
+    color: parseColor(obj.color, `${what}.color`),
+    stroke: numberInRange(obj.stroke, `${what}.stroke`, 0, 40),
+    strokeColor: parseColor(obj.strokeColor, `${what}.strokeColor`),
+  };
+}
+
+/** Strict structure and range check of a watermark list; uploaded files are checked by `checkWatermarks`. */
 function parseWatermarks(raw: unknown): Watermark[] {
   if (!Array.isArray(raw)) throw new ValidationError("watermarks must be an array");
   if (raw.length > MAX_WATERMARKS) throw new ValidationError(`At most ${MAX_WATERMARKS} watermarks are allowed`);
+  const watermarks = raw.map((entry, i) => parseWatermark(entry, `watermarks[${i}]`));
   const ids = new Set<string>();
-  return raw.map((entry: unknown, i): Watermark => {
-    const what = `watermarks[${i}]`;
-    const obj = asObject(entry, what);
-    if (obj.kind !== "text" && obj.kind !== "image")
-      throw new ValidationError(`${what}.kind must be "text" or "image"`);
-    rejectUnknownKeys(
-      obj,
-      [
-        ...WATERMARK_KEYS,
-        ...(obj.kind === "image" ? ["file", "width"] : ["text", "font", "size", "color", "stroke", "strokeColor"]),
-      ],
-      what,
-    );
-    if (typeof obj.id !== "string" || !WATERMARK_ID_PATTERN.test(obj.id))
-      throw new ValidationError(`${what}.id must be 4-12 lowercase letters or digits`);
-    if (ids.has(obj.id)) throw new ValidationError(`${what}.id "${obj.id}" is used twice`);
-    ids.add(obj.id);
-    if (typeof obj.onThumbnail !== "boolean") throw new ValidationError(`${what}.onThumbnail must be true or false`);
-    const base = {
-      id: obj.id,
-      x: numberInRange(obj.x, `${what}.x`, -OUTPUT_SIZE.width, 2 * OUTPUT_SIZE.width),
-      y: numberInRange(obj.y, `${what}.y`, -OUTPUT_SIZE.height, 2 * OUTPUT_SIZE.height),
-      rotation: numberInRange(obj.rotation, `${what}.rotation`, -180, 180),
-      opacity: numberInRange(obj.opacity, `${what}.opacity`, 0, 1),
-      onThumbnail: obj.onThumbnail,
-    };
-    if (obj.kind === "image") {
-      if (typeof obj.file !== "string" || !ASSET_NAME_PATTERN.test(obj.file))
-        throw new ValidationError(`${what}.file must be the file name returned by the assets upload`);
-      return {
-        ...base,
-        kind: "image",
-        file: obj.file,
-        width: numberInRange(obj.width, `${what}.width`, 16, 2 * OUTPUT_SIZE.width),
-      };
-    }
-    if (typeof obj.text !== "string" || obj.text.length < 1 || obj.text.length > WATERMARK_TEXT_LIMIT)
-      throw new ValidationError(`${what}.text must be 1-${WATERMARK_TEXT_LIMIT} characters`);
-    if (/[\r\n\u2028\u2029]/.test(obj.text)) throw new ValidationError(`${what}.text must be a single line`);
-    const families = CAPTION_FONTS.map((font) => font.family);
-    if (typeof obj.font !== "string" || !families.includes(obj.font))
-      throw new ValidationError(`${what}.font must be one of ${families.join(", ")}`);
-    return {
-      ...base,
-      kind: "text",
-      text: obj.text,
-      font: obj.font,
-      size: numberInRange(obj.size, `${what}.size`, 8, 400),
-      color: parseColor(obj.color, `${what}.color`),
-      stroke: numberInRange(obj.stroke, `${what}.stroke`, 0, 40),
-      strokeColor: parseColor(obj.strokeColor, `${what}.strokeColor`),
-    };
-  });
+  for (const [i, watermark] of watermarks.entries()) {
+    if (ids.has(watermark.id)) throw new ValidationError(`watermarks[${i}].id "${watermark.id}" is used twice`);
+    ids.add(watermark.id);
+  }
+  return watermarks;
 }
 
 /** The part of a valid watermark list that depends on the project: every image was uploaded to it. */
@@ -482,7 +495,7 @@ export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
   const obj = asObject(raw, "settings");
   rejectUnknownKeys(
     obj,
-    ["layout", "focusX", "custom", "subtitles", "captionStyle", "captionY", "watermarks"],
+    ["layout", "focusX", "custom", "subtitles", "captionStyle", "captionY", "watermarks", "intro", "outro"],
     "settings",
   );
   const patch: Partial<ClipSettings> = {};
@@ -506,7 +519,178 @@ export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
     patch.captionStyle = obj.captionStyle;
   }
   if (obj.watermarks !== undefined) patch.watermarks = parseWatermarks(obj.watermarks);
+  for (const key of ["intro", "outro"] as const) {
+    const value = obj[key];
+    if (value === undefined) continue;
+    if (value !== null && (typeof value !== "string" || value === ""))
+      throw new ValidationError(`settings.${key} must be a library file name or null`);
+    patch[key] = value;
+  }
   return patch;
+}
+
+const TIMELINE_ITEM_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const TIMELINE_KINDS = ["zoom", "shake", "flash", "look", "overlay", "sound", "voice"] as const;
+const ITEM_BASE_KEYS = ["id", "kind", "start", "end"];
+/** Fields each kind adds to the base; everything else in an item is a typo. */
+const ITEM_KEYS: Record<TimelineItem["kind"], string[]> = {
+  zoom: ["scale", "x", "y", "ease"],
+  shake: ["intensity"],
+  flash: ["color"],
+  look: ["look"],
+  overlay: ["element", "animation", "overTeaser"],
+  sound: ["file", "volume"],
+  voice: ["preset"],
+};
+
+function finiteNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ValidationError(`${name} must be a number`);
+  return value;
+}
+
+function parseTimelineItem(entry: unknown, what: string): TimelineItem {
+  const obj = asObject(entry, what);
+  const kind = TIMELINE_KINDS.find((candidate) => candidate === obj.kind);
+  if (!kind) throw new ValidationError(`${what}.kind must be one of ${TIMELINE_KINDS.join(", ")}`);
+  rejectUnknownKeys(obj, [...ITEM_BASE_KEYS, ...ITEM_KEYS[kind]], what);
+  if (typeof obj.id !== "string" || !TIMELINE_ITEM_ID.test(obj.id))
+    throw new ValidationError(`${what}.id must be 1-32 letters, digits, "_" or "-"`);
+  const start = finiteNumber(obj.start, `${what}.start`);
+  if (start < 0) throw new ValidationError(`${what}.start must be >= 0`);
+  const end = finiteNumber(obj.end, `${what}.end`);
+  if (end <= start) throw new ValidationError(`${what}.end must be after ${what}.start`);
+  const length = end - start;
+  if (length < ITEM_LIMITS.min - EPSILON || length > ITEM_LIMITS.max + EPSILON) {
+    throw new ValidationError(
+      `${what} is ${length.toFixed(2)}s long; items must be ${ITEM_LIMITS.min}-${ITEM_LIMITS.max}s`,
+    );
+  }
+  const base = { id: obj.id, start, end };
+  switch (kind) {
+    case "zoom": {
+      const scale = numberInRange(obj.scale, `${what}.scale`, ZOOM_LIMITS.min, ZOOM_LIMITS.max);
+      const x = numberInRange(obj.x, `${what}.x`, 0, 1);
+      const y = numberInRange(obj.y, `${what}.y`, 0, 1);
+      if (obj.ease !== "punch" && obj.ease !== "smooth")
+        throw new ValidationError(`${what}.ease must be "punch" or "smooth"`);
+      return { ...base, kind, scale, x, y, ease: obj.ease };
+    }
+    case "shake":
+      return { ...base, kind, intensity: numberInRange(obj.intensity, `${what}.intensity`, 0.1, 1) };
+    case "flash":
+      return { ...base, kind, color: parseColor(obj.color, `${what}.color`) };
+    case "look": {
+      if (obj.look !== "deepfry" && obj.look !== "bw" && obj.look !== "blur")
+        throw new ValidationError(`${what}.look must be one of deepfry, bw, blur`);
+      return { ...base, kind, look: obj.look };
+    }
+    case "overlay": {
+      if (obj.animation !== "pop" && obj.animation !== "shake" && obj.animation !== "slide" && obj.animation !== "none")
+        throw new ValidationError(`${what}.animation must be one of pop, shake, slide, none`);
+      // Optional so projects and clients from before the flag keep working; anything but a boolean is a typo.
+      const overTeaser = obj.overTeaser ?? false;
+      if (typeof overTeaser !== "boolean") throw new ValidationError(`${what}.overTeaser must be true or false`);
+      return {
+        ...base,
+        kind,
+        element: parseWatermark(obj.element, `${what}.element`),
+        overTeaser,
+        animation: obj.animation,
+      };
+    }
+    case "sound": {
+      if (typeof obj.file !== "string" || obj.file === "" || obj.file.length > 120)
+        throw new ValidationError(`${what}.file must be a library file name`);
+      return { ...base, kind, file: obj.file, volume: numberInRange(obj.volume, `${what}.volume`, 0, 2) };
+    }
+    case "voice": {
+      const presets = ["earrape", "bass", "chipmunk", "deep", "echo", "robot"];
+      if (typeof obj.preset !== "string" || !presets.includes(obj.preset))
+        throw new ValidationError(`${what}.preset must be one of ${presets.join(", ")}`);
+      return { ...base, kind, preset: obj.preset as VoiceItem["preset"] };
+    }
+  }
+}
+
+/** Strict syntax check of a whole timeline; library files and the clip range are checked by `checkTimeline`. */
+export function parseTimeline(raw: unknown): ClipTimeline {
+  const obj = asObject(raw, "timeline");
+  rejectUnknownKeys(obj, ["items", "teaser"], "timeline");
+  if (!Array.isArray(obj.items)) throw new ValidationError("timeline.items must be an array");
+  if (obj.items.length > MAX_TIMELINE_ITEMS)
+    throw new ValidationError(`At most ${MAX_TIMELINE_ITEMS} timeline items are allowed`);
+  const items = obj.items.map((entry, i) => parseTimelineItem(entry, `timeline.items[${i}]`));
+  const ids = new Set<string>();
+  for (const [i, item] of items.entries()) {
+    if (ids.has(item.id)) throw new ValidationError(`timeline.items[${i}].id "${item.id}" is used twice`);
+    ids.add(item.id);
+  }
+  let teaser: ClipTimeline["teaser"] = null;
+  if (obj.teaser !== undefined && obj.teaser !== null) {
+    const teaserObj = asObject(obj.teaser, "timeline.teaser");
+    rejectUnknownKeys(teaserObj, ["start", "end"], "timeline.teaser");
+    const start = finiteNumber(teaserObj.start, "timeline.teaser.start");
+    const end = finiteNumber(teaserObj.end, "timeline.teaser.end");
+    if (start < 0) throw new ValidationError("timeline.teaser.start must be >= 0");
+    if (end <= start) throw new ValidationError("timeline.teaser.end must be after timeline.teaser.start");
+    teaser = { start, end };
+  }
+  return { items, teaser };
+}
+
+/** Library item for a reference in a timeline or settings, or null when the file is gone or of another kind. */
+function libraryItem(file: string, kind: LibraryKind): LibraryItem | null {
+  let path: string;
+  try {
+    path = libraryPath(file);
+  } catch {
+    return null;
+  }
+  const item = libraryIndexSync().find((candidate) => candidate.file === file);
+  return item && item.kind === kind && existsSync(path) ? item : null;
+}
+
+/** The part of a timeline that depends on the library and the clip: sticker/sound files exist, zooms do not overlap, teaser fits. */
+function checkTimeline(timeline: ClipTimeline, clip: { start: number; end: number }): void {
+  for (const [i, item] of timeline.items.entries()) {
+    const what = `timeline.items[${i}]`;
+    if (item.kind === "overlay" && item.element.kind === "image" && !libraryItem(item.element.file, "sticker")) {
+      throw new ValidationError(`${what}.element.file ${item.element.file} is not a sticker in the library`);
+    }
+    if (item.kind === "sound") {
+      const sound = libraryItem(item.file, "sound");
+      if (!sound) throw new ValidationError(`${what}.file ${item.file} is not a sound in the library`);
+      if (sound.duration === null) throw new ValidationError(`${what}.file ${item.file} has no known duration`);
+      const length = item.end - item.start;
+      if (length > sound.duration + 0.05) {
+        throw new ValidationError(
+          `${what} is ${length.toFixed(2)}s long but the sound ${sound.name} is only ${sound.duration.toFixed(2)}s`,
+        );
+      }
+    }
+  }
+  const overlap = overlappingZooms(timeline.items);
+  if (overlap) throw new ValidationError(`Zoom items ${overlap[0].id} and ${overlap[1].id} overlap`);
+  const teaser = timeline.teaser;
+  if (!teaser) return;
+  if (teaser.start < clip.start - EPSILON || teaser.end > clip.end + EPSILON) {
+    throw new ValidationError(
+      `Teaser ${teaser.start}s-${teaser.end}s must lie inside the clip (${clip.start}s-${clip.end}s)`,
+    );
+  }
+  const length = teaser.end - teaser.start;
+  if (length < TEASER_LIMITS.min - EPSILON || length > TEASER_LIMITS.max + EPSILON) {
+    throw new ValidationError(
+      `Teaser is ${length.toFixed(2)}s long; it must be ${TEASER_LIMITS.min}-${TEASER_LIMITS.max}s`,
+    );
+  }
+}
+
+/** An intro/outro must be a library video; null clears it. */
+function checkLibraryVideo(file: string | null, what: "intro" | "outro"): void {
+  if (file !== null && !libraryItem(file, "video")) {
+    throw new ValidationError(`settings.${what} ${file} is not a video in the library`);
+  }
 }
 
 export interface ThumbnailPatch {
@@ -570,11 +754,13 @@ export interface ClipPatch {
   selected?: boolean;
   settings?: Partial<ClipSettings>;
   thumbnail?: ThumbnailPatch;
+  /** Whole replacement of the clip's editor timeline. */
+  timeline?: ClipTimeline;
 }
 
 export function parseClipPatch(raw: unknown): ClipPatch {
   const obj = asObject(raw, "clip patch");
-  rejectUnknownKeys(obj, ["start", "end", "title", "selected", "settings", "thumbnail"], "clip");
+  rejectUnknownKeys(obj, ["start", "end", "title", "selected", "settings", "thumbnail", "timeline"], "clip");
   const patch: ClipPatch = {};
   for (const key of ["start", "end"] as const) {
     if (obj[key] === undefined) continue;
@@ -594,6 +780,7 @@ export function parseClipPatch(raw: unknown): ClipPatch {
   }
   if (obj.settings !== undefined) patch.settings = parseSettingsPatch(obj.settings);
   if (obj.thumbnail !== undefined) patch.thumbnail = parseThumbnailPatch(obj.thumbnail);
+  if (obj.timeline !== undefined) patch.timeline = parseTimeline(obj.timeline);
   return patch;
 }
 
@@ -725,10 +912,20 @@ export async function patchClip(id: string, clipId: string, patch: ClipPatch): P
     const timingChanged = start !== clip.start || end !== clip.end;
     if (patch.settings?.custom) checkCustomLayout(patch.settings.custom, p);
     if (patch.settings?.watermarks) checkWatermarks(patch.settings.watermarks, p);
+    if (patch.settings?.intro !== undefined) checkLibraryVideo(patch.settings.intro, "intro");
+    if (patch.settings?.outro !== undefined) checkLibraryVideo(patch.settings.outro, "outro");
     const settings = concreteSettings(p, { ...clip.settings, ...patch.settings });
     if (timingChanged) {
       if (!p.source) throw new ValidationError("The source video is not downloaded yet");
       assertClipRange(start, end, p.source.duration);
+    }
+    if (patch.timeline) checkTimeline(patch.timeline, { start, end });
+    let timeline = patch.timeline ?? clip.timeline;
+    if (patch.timeline && JSON.stringify(patch.timeline) === JSON.stringify(clip.timeline)) timeline = clip.timeline;
+    // Trimming must not leave a teaser pointing outside the clip: drop it instead of refusing the trim.
+    if (timingChanged && timeline.teaser) {
+      const { teaser } = timeline;
+      if (teaser.start < start - EPSILON || teaser.end > end + EPSILON) timeline = { ...timeline, teaser: null };
     }
     const requestedTime = patch.thumbnail?.time;
     if (requestedTime !== undefined && requestedTime !== null && (requestedTime < start || requestedTime > end)) {
@@ -742,10 +939,13 @@ export async function patchClip(id: string, clipId: string, patch: ClipPatch): P
         (key) => patch.thumbnail?.[key] !== clip.thumbnail[key],
       );
     const framingChanged = timingChanged || coverDiffers(clip.settings, settings);
-    if (timingChanged || settingsDiffer(clip.settings, settings)) invalidateRender(clip, stale);
+    // A timeline change makes the rendered file stale but not the cover image: overlays are not painted on it.
+    if (timingChanged || settingsDiffer(clip.settings, settings) || timeline !== clip.timeline)
+      invalidateRender(clip, stale);
     clip.start = start;
     clip.end = end;
     clip.settings = settings;
+    clip.timeline = timeline;
     clip.thumbnail = thumbnail;
     // A cover without its own text shows the clip title.
     const headlineChanged = patch.title !== undefined && patch.title !== clip.title && thumbnail.text === null;
@@ -779,6 +979,8 @@ export async function updateSettings(
   const project = await updateProject(id, (p) => {
     if (patch.custom) checkCustomLayout(patch.custom, p);
     if (patch.watermarks) checkWatermarks(patch.watermarks, p);
+    if (patch.intro !== undefined) checkLibraryVideo(patch.intro, "intro");
+    if (patch.outro !== undefined) checkLibraryVideo(patch.outro, "outro");
     const clips = target === null ? [] : target === "all" ? p.clips : target.map((clipId) => findClip(p, clipId));
     if (target === null || target === "all") p.defaults = { ...p.defaults, ...patch };
     for (const clip of clips) {
@@ -799,6 +1001,8 @@ export async function patchProject(id: string, patch: ProjectPatch): Promise<Pro
     if (patch.defaults) {
       if (patch.defaults.custom) checkCustomLayout(patch.defaults.custom, p);
       if (patch.defaults.watermarks) checkWatermarks(patch.defaults.watermarks, p);
+      if (patch.defaults.intro !== undefined) checkLibraryVideo(patch.defaults.intro, "intro");
+      if (patch.defaults.outro !== undefined) checkLibraryVideo(patch.defaults.outro, "outro");
       p.defaults = { ...p.defaults, ...patch.defaults };
     }
     if (patch.webcam) {
@@ -1095,6 +1299,8 @@ async function renderClipUnmarked(id: string, clipId: string, signal?: AbortSign
         settings: clip.settings,
         webcam: started.webcam.rect,
         words,
+        timeline: clip.timeline,
+        libraryDir: LIBRARY_DIR,
         outPath,
         assetsDir: assetsDir(id),
       },

@@ -194,7 +194,44 @@ Fonts are `Anton`, `Bangers`, `Poppins ExtraBold`, `Poppins SemiBold`. Image fil
 uploaded through the web UI or the assets API first (PNG, JPEG or WebP). Changing watermarks
 discards the clip's rendered file: render again.
 
-## 8. Post text (Instagram, TikTok, YouTube Shorts)
+## 8. Media library and the editor timeline
+
+Sounds, stickers and intro/outro videos come only from the user's uploads. They live in
+`<workspace>/library/` and are shared by every project, so ask the user for a file instead of
+inventing one:
+
+```bash
+bun run clip library list
+bun run clip library add vine-boom.mp3 --name "vine boom"   # type from the extension
+bun run clip library rename <file> "bruh"
+bun run clip library rm <file>                              # refused while a clip uses it
+```
+
+Setting the timeline of a clip by hand (source seconds, like the clip range):
+
+```bash
+bun run clip timeline <id> <clipId> timeline.json
+bun run clip settings <id> --clips <clipId> --intro <library video> --outro none
+```
+
+`timeline.json` is the whole `{"items":[...],"teaser":{start,end}|null}`: items are `zoom`
+(scale 1.05-3, x/y 0..1, ease punch|smooth), `shake`, `flash`, `look` (deepfry|bw|blur),
+`overlay` (watermark-shaped `element`, animation pop|shake|slide|none), `sound` (library file,
+volume 0..2) and `voice` (earrape|bass|chipmunk|deep|echo|robot). Zooms must not overlap, a sound
+cannot be longer than its file, and the teaser must lie inside the clip. The server is the
+authority: it rejects bad timelines with a 400 and names the field.
+
+Let the AI edit compose it when the user does not care about individual effects:
+
+```bash
+bun run clip autoedit <id>                        # selected clips, replaces their timelines
+bun run clip autoedit <id> --clips <clipId> --append   # keep existing items and teaser
+```
+
+The AI edit uses the Highlight AI when configured and heuristics otherwise. Review the result in
+`clip show <id> --json` (`.clips[].timeline`) before rendering.
+
+## 9. Post text (Instagram, TikTok, YouTube Shorts)
 
 After a clip is final, write the text the user pastes when posting. It needs the Highlight AI
 (Settings, or `LLM_COMMAND`/`LLM_MODEL` in `.env`); without it the command fails with
@@ -209,7 +246,7 @@ Result: Instagram and TikTok caption + hashtags, YouTube title (max 100 chars) +
 hashtags (always `#Shorts`), stored in `clip.social`. It is written for the clip's current range:
 run it again after trimming. Read the text and fix anything wrong before giving it to the user.
 
-## 9. Editing the AI prompts
+## 10. Editing the AI prompts
 
 Settings > Prompts holds two editable guidance texts: how highlights are judged
 (`highlightPrompt`) and how post text is written (`socialPrompt`), max 6000 characters, empty =

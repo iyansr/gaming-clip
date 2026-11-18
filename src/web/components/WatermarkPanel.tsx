@@ -26,7 +26,7 @@ interface Props {
 }
 
 /** Whole-number field that commits while typing when the value is valid and snaps back on blur. */
-function NumberField({
+export function NumberField({
   label,
   value,
   min,
@@ -62,7 +62,7 @@ function NumberField({
 }
 
 /** Text field of a text overlay: commits non-blank values while typing, restores the stored value on blur. */
-function TextField({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
+export function TextField({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [draft, setDraft] = useState<string | null>(null);
   return (
     <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -195,6 +195,8 @@ export function WatermarkPanel({
 
   return (
     <Panel
+      collapsible
+      defaultOpen={false}
       title="Watermark"
       actions={
         <span className="text-xs text-zinc-400 tabular-nums">

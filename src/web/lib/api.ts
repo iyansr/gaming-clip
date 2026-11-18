@@ -1,7 +1,11 @@
 import type { WhisperModelStatus } from "../../core/whisper-models";
+import { LIBRARY_LIMITS, LIBRARY_TYPES } from "../../shared/library";
 import type {
   ClipSettings,
   ClipThumbnail,
+  ClipTimeline,
+  LibraryItem,
+  LibraryKind,
   Project,
   ProjectOptions,
   Rect,
@@ -29,6 +33,8 @@ export interface ClipPatch {
   selected?: boolean;
   settings?: Partial<ClipSettings>;
   thumbnail?: Partial<Pick<ClipThumbnail, "time" | "text" | "style" | "textY">>;
+  /** Whole replacement of the editor timeline. */
+  timeline?: ClipTimeline;
 }
 
 /** A suggested cover frame inside a clip; `score` is 0..1. */
@@ -103,7 +109,13 @@ export const api = {
     request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/thumbnail`, {}),
   generateSocial: (id: string, clipId: string, language?: string) =>
     request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/social`, language ? { language } : {}),
+  autoEdit: (id: string, clipId: string, replace: boolean) =>
+    request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/autoedit`, { replace }),
   cancelRender: (id: string) => request<Project>("POST", `${projectUrl(id)}/render/cancel`, {}),
+  library: () => request<LibraryItem[]>("GET", "/api/library"),
+  renameLibraryItem: (file: string, name: string) =>
+    request<LibraryItem>("PATCH", `/api/library/${encodeURIComponent(file)}`, { name }),
+  deleteLibraryItem: (file: string) => request<void>("DELETE", `/api/library/${encodeURIComponent(file)}`),
   settings: () => request<SettingsResponse>("GET", "/api/settings"),
   patchSettings: (patch: SettingsPatch) => request<SettingsResponse>("PATCH", "/api/settings", patch),
   testAi: () => request<{ ok: boolean; ms: number; error?: string }>("POST", "/api/settings/test-ai", {}),
@@ -115,15 +127,11 @@ export const api = {
 export const ASSET_TYPES = ["image/png", "image/jpeg", "image/webp"];
 export const MAX_ASSET_BYTES = 15 * 1024 * 1024;
 
-/** Uploads a background image as raw bytes (fetch has no upload progress, XHR does). */
-export function uploadAsset(
-  projectId: string,
-  file: File,
-  onProgress: (fraction: number) => void,
-): Promise<{ file: string }> {
-  const { promise, resolve, reject } = Promise.withResolvers<{ file: string }>();
+/** POSTs a file as the raw request body (fetch has no upload progress, XHR does) and resolves with the parsed JSON. */
+function uploadBody<T>(url: string, file: File, onProgress: (fraction: number) => void): Promise<T> {
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
   const xhr = new XMLHttpRequest();
-  xhr.open("POST", `${projectUrl(projectId)}/assets`);
+  xhr.open("POST", url);
   xhr.setRequestHeader("Content-Type", file.type);
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) onProgress(e.loaded / e.total);
@@ -136,18 +144,59 @@ export function uploadAsset(
     } catch {
       // not JSON: fall through to the status line
     }
-    const body = typeof data === "object" && data !== null ? (data as { error?: unknown; file?: unknown }) : {};
-    if (xhr.status >= 200 && xhr.status < 300 && typeof body.file === "string") resolve({ file: body.file });
-    else
-      reject(new ApiError(typeof body.error === "string" ? body.error : `${xhr.status} ${xhr.statusText}`, xhr.status));
+    if (xhr.status >= 200 && xhr.status < 300 && typeof data === "object" && data !== null) resolve(data as T);
+    else {
+      const message =
+        typeof data === "object" && data !== null && "error" in data && typeof data.error === "string"
+          ? data.error
+          : `${xhr.status} ${xhr.statusText}`;
+      reject(new ApiError(message, xhr.status));
+    }
   };
   xhr.send(file);
   return promise;
 }
 
+/** Uploads a background image as raw bytes. */
+export function uploadAsset(
+  projectId: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ file: string }> {
+  return uploadBody<{ file: string }>(`${projectUrl(projectId)}/assets`, file, onProgress);
+}
+
+/** What the file picker of the media library accepts, by kind (all kinds when omitted). */
+export function libraryAccept(kind?: LibraryKind): string {
+  return Object.entries(LIBRARY_TYPES)
+    .filter(([, t]) => kind === undefined || t.kind === kind)
+    .flatMap(([mime, t]) => [mime, t.ext])
+    .join(",");
+}
+
+/** Why a file cannot go into the library, checked before the upload; null when it looks fine. */
+export function libraryFileError(file: File): string | null {
+  const type = LIBRARY_TYPES[file.type];
+  if (!type) return `${file.name}: unsupported type. Use MP3, WAV, OGG, M4A, PNG, WebP, JPEG, MP4, MOV or WebM.`;
+  const limit = LIBRARY_LIMITS.bytes[type.kind];
+  if (file.size > limit)
+    return `${file.name} is ${(file.size / 1048576).toFixed(1)} MB; the limit for ${type.kind}s is ${limit / 1048576} MB`;
+  return null;
+}
+
+/** Uploads one library file; the server probes it and answers with the stored item. */
+export function uploadLibraryFile(
+  file: File,
+  name: string,
+  onProgress: (fraction: number) => void,
+): Promise<LibraryItem> {
+  return uploadBody<LibraryItem>(`/api/library?name=${encodeURIComponent(name)}`, file, onProgress);
+}
+
 export const media = {
   source: (id: string) => `/media/${id}/source`,
   asset: (id: string, file: string) => `/media/${id}/assets/${encodeURIComponent(file)}`,
+  library: (file: string) => `/media/library/${encodeURIComponent(file)}`,
   thumbnail: (id: string) => `/media/${id}/thumbnail`,
   frame: (id: string, t: number, w: number) => `/media/${id}/frame?t=${t.toFixed(2)}&w=${w}`,
   clip: (id: string, file: string, download = false) =>

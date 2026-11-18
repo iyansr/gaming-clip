@@ -43,3 +43,17 @@ input[type="checkbox"] {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Settings column: tighter controls and padding than the default sizes the shared components use. */
+.compact select,
+.compact input[type="text"],
+.compact input[type="number"],
+.compact .h-9 {
+  height: 2rem;
+}
+.compact .p-3 {
+  padding: 0.625rem;
+}
+.compact .gap-3 {
+  gap: 0.5rem;
+}

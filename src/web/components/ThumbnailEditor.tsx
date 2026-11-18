@@ -324,6 +324,8 @@ export function ThumbnailPanel({
 
   return (
     <Panel
+      collapsible
+      defaultOpen={false}
       title="Thumbnail"
       actions={
         thumb.file ? (

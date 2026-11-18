@@ -1,6 +1,7 @@
 import { rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 
+import { generateEdit } from "../core/autoedit";
 import { FONTS_DIR, HOST, MODELS_DIR, PORT, VERSION, WORKSPACE_DIR, projectPaths } from "../core/config";
 import { checkDeps } from "../core/doctor";
 import { grabJpeg } from "../core/frames";
@@ -12,6 +13,7 @@ import {
   enqueueRender,
   recoverInterrupted,
 } from "../core/jobs";
+import { addLibraryItem, libraryPath, listLibrary, removeLibraryItem, renameLibraryItem } from "../core/library";
 import { testLlm } from "../core/llm";
 import {
   addAsset,
@@ -44,6 +46,7 @@ import {
   ValidationError,
 } from "../core/store";
 import { listWhisperModels, startWhisperDownload } from "../core/whisper-models";
+import { LIBRARY_LIMITS, LIBRARY_TYPES } from "../shared/library";
 import { STAGE_ORDER, type Project, type SourceMeta, type StageId } from "../shared/types";
 import index from "../web/index.html";
 
@@ -64,15 +67,20 @@ const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 const ALLOWED_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", HOST.includes(":") ? `[${HOST}]` : HOST]);
 
 const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
-/** Only the asset upload route takes raw image bodies. */
+/** Raw image bodies of the project asset route. */
 const IMAGE_CONTENT_TYPE = new RegExp(`^(${Object.keys(ASSET_TYPES).join("|")})\\s*(;|$)`, "i");
+/** Raw bodies of the media library route: sounds, stickers and intro/outro videos. */
+const LIBRARY_CONTENT_TYPE = new RegExp(`^(${Object.keys(LIBRARY_TYPES).join("|")})\\s*(;|$)`, "i");
+const JSON_LABEL = "application/json";
+const ASSET_LABEL = Object.keys(ASSET_TYPES).join(", ");
+const LIBRARY_LABEL = Object.keys(LIBRARY_TYPES).join(", ");
 
 /**
  * The server only listens locally, but any web page the user visits can still make their browser talk to it
  * (cross-site requests, DNS rebinding). Returns a rejection for requests that did not come from our own UI or a plain client.
  * Requests with a body must carry `bodyType` as Content-Type.
  */
-function rejectUnsafe(req: Request, bodyType: RegExp): Response | null {
+function rejectUnsafe(req: Request, bodyType: RegExp, label: string): Response | null {
   const host = req.headers.get("host") ?? "";
   if (!WILDCARD_HOSTS.has(HOST)) {
     let hostname = "";
@@ -94,8 +102,7 @@ function rejectUnsafe(req: Request, bodyType: RegExp): Response | null {
     hasBody &&
     !bodyType.test(req.headers.get("content-type") ?? "")
   ) {
-    const wanted = bodyType === JSON_CONTENT_TYPE ? "application/json" : Object.keys(ASSET_TYPES).join(", ");
-    return Response.json({ error: `Content-Type must be ${wanted}` }, { status: 415 });
+    return Response.json({ error: `Content-Type must be ${label}` }, { status: 415 });
   }
   return null;
 }
@@ -105,8 +112,9 @@ async function api(
   req: Request,
   handler: () => Promise<Response> | Response,
   bodyType = JSON_CONTENT_TYPE,
+  label = JSON_LABEL,
 ): Promise<Response> {
-  const rejected = rejectUnsafe(req, bodyType);
+  const rejected = rejectUnsafe(req, bodyType, label);
   if (rejected) return rejected;
   try {
     return await handler();
@@ -393,7 +401,47 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
               );
             },
             IMAGE_CONTENT_TYPE,
+            ASSET_LABEL,
           ),
+      },
+
+      "/api/library": {
+        GET: (req) => api(req, async () => Response.json(await listLibrary())),
+        POST: (req) =>
+          api(
+            req,
+            async () => {
+              const contentType = (req.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+              const kind = LIBRARY_TYPES[contentType]?.kind;
+              if (!kind) throw new ValidationError(`Content-Type must be one of ${LIBRARY_LABEL}`);
+              const bytes = await readBytes(req, LIBRARY_LIMITS.bytes[kind]);
+              // The browser sends the picked file's name; its known media extension is dropped from the label.
+              const raw = (new URL(req.url).searchParams.get("name") ?? "").trim();
+              const extension = /\.([a-z0-9]{1,5})$/i.exec(raw);
+              const known =
+                extension !== null &&
+                Object.values(LIBRARY_TYPES).some((type) => type.ext === `.${extension[1]!.toLowerCase()}`);
+              const name = known ? raw.slice(0, extension.index) : raw;
+              return Response.json(await addLibraryItem(bytes, contentType, name), { status: 201 });
+            },
+            LIBRARY_CONTENT_TYPE,
+            LIBRARY_LABEL,
+          ),
+      },
+
+      "/api/library/:file": {
+        PATCH: (req) =>
+          api(req, async () => {
+            const body = await readBody(req);
+            noUnknownKeys(body, ["name"]);
+            if (typeof body.name !== "string") throw new ValidationError("name must be a string");
+            return Response.json(await renameLibraryItem(req.params.file, body.name));
+          }),
+        DELETE: (req) =>
+          api(req, async () => {
+            await removeLibraryItem(req.params.file);
+            return new Response(null, { status: 204 });
+          }),
       },
 
       "/api/projects/:id/rerun": {
@@ -439,6 +487,19 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
             Response.json(await patchClip(req.params.id, req.params.clipId, parseClipPatch(await readBody(req)))),
           ),
         DELETE: (req) => api(req, async () => Response.json(await removeClip(req.params.id, req.params.clipId))),
+      },
+
+      "/api/projects/:id/clips/:clipId/autoedit": {
+        POST: (req) =>
+          api(req, async () => {
+            const body = await readBody(req);
+            noUnknownKeys(body, ["replace"]);
+            if (body.replace !== undefined && typeof body.replace !== "boolean")
+              throw new ValidationError("replace must be true or false");
+            return Response.json(
+              await generateEdit(req.params.id, req.params.clipId, { replace: body.replace }, req.signal),
+            );
+          }),
       },
 
       "/api/projects/:id/clips/:clipId/thumbnail": {
@@ -492,6 +553,18 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
 
       "/api/projects/:id/events": {
         GET: (req, server) => api(req, () => projectEvents(req, server, req.params.id)),
+      },
+
+      "/media/library/:file": {
+        GET: (req, srv) =>
+          api(req, async () => {
+            // Sound effects and stickers stream like source media, and a paused player keeps its request open.
+            srv.timeout(req, 0);
+            return serveFile(libraryPath(plainFileName(req.params.file)), {
+              "Cache-Control": "no-cache",
+              "X-Content-Type-Options": "nosniff",
+            });
+          }),
       },
 
       "/media/:id/source": {

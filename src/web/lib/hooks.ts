@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import { CAPTION_FONTS } from "../../shared/captions";
-import type { Clip, ClipSettings, ClipThumbnail, Project, Transcript, Word } from "../../shared/types";
+import type { Clip, ClipSettings, ClipThumbnail, ClipTimeline, Project, Transcript, Word } from "../../shared/types";
 import { api, errorMessage, type ClipPatch } from "./api";
 import { useToast } from "./toast";
 
@@ -121,6 +121,8 @@ export interface ClipEdit {
   selected?: boolean;
   settings?: Partial<ClipSettings>;
   thumbnail?: ClipPatch["thumbnail"];
+  /** Whole replacement of the editor timeline; it is its own patch group. */
+  timeline?: ClipTimeline;
 }
 
 function mergeEdit(a: ClipEdit | undefined, b: ClipEdit): ClipEdit {
@@ -160,6 +162,7 @@ function applyEdit(clip: Clip, edit: ClipEdit | undefined): Clip {
     ...(edit.end !== undefined && { end: edit.end }),
     ...(edit.title !== undefined && { title: edit.title }),
     ...(edit.selected !== undefined && { selected: edit.selected }),
+    ...(edit.timeline !== undefined && { timeline: edit.timeline }),
     settings: edit.settings ? { ...clip.settings, ...edit.settings } : clip.settings,
     thumbnail,
   };
@@ -175,6 +178,7 @@ function splitEdit(edit: ClipEdit): ClipEdit[] {
   if (edit.selected !== undefined) groups.push({ selected: edit.selected });
   if (edit.settings) groups.push({ settings: edit.settings });
   if (edit.thumbnail) groups.push({ thumbnail: edit.thumbnail });
+  if (edit.timeline) groups.push({ timeline: edit.timeline });
   return groups;
 }
 

@@ -17,6 +17,21 @@ Start a few seconds before the action so viewers see the setup, and end right af
 Write each title as a short hook (under 60 characters) that names or teases what happens and that the clip really delivers. Write each reason as one sentence on why the moment works as a short. Give a high score only to moments you would post yourself.`;
 
 /**
+ * How the reference gaming shorts are edited: one loud hook, punch-ins on the reaction and the play, a boom on the
+ * impact, a teaser of the payoff. Editable like the other two prompts; the output format and limits stay in code.
+ */
+export const DEFAULT_EDIT_GUIDANCE = `You edit vertical gaming shorts the way the biggest clip channels do. The edit serves the moment: never bury a reaction, never decorate a calm stretch.
+Hook: open with a headline in the first 2-2.5 seconds. 2 to 6 words, ALL CAPS, in the language spoken in the clip, taken from what is said or what happens. It is one line in Anton at about 110 px, white with a thick black outline, in the upper third, and pops in. No emoji, no hashtags, no "wait for it".
+Punch-ins: zoom about 1.3 to 1.8x with the punch ease, 0.6 to 2 seconds, on the face at reactions (screams, laughs, shock, rage) and on the action at plays, kills and fails. Keep the focus on what matters: "face" for the streamer, "action" for the game, "centre" only when both are equally important.
+Shake on the single biggest impact (a hit, a death, a jump scare), 0.3 to 0.6 seconds, intensity 0.6 to 1.
+Flash a white frame of 0.1 to 0.2 seconds on a hard cut or a big impact, at most one per clip.
+Voice: "earrape" or "bass" only on the single loudest scream or laugh, 0.5 to 2 seconds, and only when the transcript or a LOUD marker says it is a scream. Never distort normal talking.
+Labels: short text tags sparingly, for example "*LISTENING*", "POV" or "HE'S DEAD", 0.8 to 2 seconds, near the middle-lower part of the frame. At most three in a clip.
+Sounds and stickers: only from the library, chosen by name. Place a boom on an impact, a bruh on a fail, a hit on a play, a sticker where the reaction is. Do not invent files and do not repeat the same sound.
+Teaser: when the payoff is later than 6 seconds into the clip, replay 1.5 to 3 seconds of it at the start as the teaser (the payoff itself, not the setup).
+Restraint: leave calm stretches untouched, at most about one effect every 3 seconds, and keep everything inside the clip. When in doubt, add less.`;
+
+/**
  * Tone, style, audience and hashtag strategy for the post text of Instagram, TikTok and YouTube Shorts. Modelled on
  * clip channels that do well with gaming and streamer shorts (Indonesian "momen kocak" clippers and English
  * streamer-moment channels): a loud, short hook in the streamer's world, the streamer's name up front, and

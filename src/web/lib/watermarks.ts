@@ -26,6 +26,19 @@ export function createOffscreen(width: number, height: number): WatermarkContext
   return ctx;
 }
 
+let scratch: WatermarkContext | null = null;
+
+/**
+ * Like createOffscreen, but hands back one shared canvas (resized when the size changes): the frame loop asks for a
+ * scratch every frame and drawWatermarks clears it before each use.
+ */
+export function sharedOffscreen(width: number, height: number): WatermarkContext {
+  const canvas = scratch?.canvas as HTMLCanvasElement | undefined;
+  if (scratch && canvas && canvas.width === width && canvas.height === height) return scratch;
+  scratch = createOffscreen(width, height);
+  return scratch;
+}
+
 let measuring: CanvasRenderingContext2D | null = null;
 
 function measureContext(): CanvasRenderingContext2D {

@@ -141,6 +141,8 @@ function SocialPanelBody({ project, clip, applyProject }: SocialPanelProps) {
 
   return (
     <Panel
+      collapsible
+      defaultOpen={false}
       title="Post text"
       actions={
         social ? <Badge tone="good">Written in {social.language}</Badge> : <Badge tone="warn">Not written</Badge>

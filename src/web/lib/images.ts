@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { media } from "./api";
 
@@ -45,14 +45,14 @@ export function loadAssetImage(projectId: string, file: string): Promise<HTMLIma
   return loadImage(media.asset(projectId, file));
 }
 
-/** Decoded images of several project assets by file name; files that are still loading or failed are absent. */
-export function useAssetImages(projectId: string, files: string[]): Map<string, HTMLImageElement> {
+/** Decoded images by file name for a set of files whose URL comes from `urlOf`; files still loading or failed are absent. */
+function useImageSet(files: string[], urlOf: (file: string) => string): Map<string, HTMLImageElement> {
   const key = files.join("\n");
   const [version, setVersion] = useState(0);
   useEffect(() => {
     let cancelled = false;
     for (const file of key === "" ? [] : key.split("\n")) {
-      const url = media.asset(projectId, file);
+      const url = urlOf(file);
       if (loaded.has(url)) continue;
       loadImage(url)
         .then(() => {
@@ -63,15 +63,30 @@ export function useAssetImages(projectId: string, files: string[]): Map<string, 
     return () => {
       cancelled = true;
     };
-  }, [projectId, key]);
+    // `urlOf` is a stable module-level or per-project function; the key carries the files.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlOf, key]);
   return useMemo(() => {
     const map = new Map<string, HTMLImageElement>();
     for (const file of key === "" ? [] : key.split("\n")) {
-      const image = loaded.get(media.asset(projectId, file));
+      const image = loaded.get(urlOf(file));
       if (image) map.set(file, image);
     }
     return map;
     // `version` bumps when a pending image finishes loading.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, key, version]);
+  }, [urlOf, key, version]);
+}
+
+/** Decoded images of several project assets by file name; files that are still loading or failed are absent. */
+export function useAssetImages(projectId: string, files: string[]): Map<string, HTMLImageElement> {
+  const urlOf = useCallback((file: string) => media.asset(projectId, file), [projectId]);
+  return useImageSet(files, urlOf);
+}
+
+const libraryUrl = (file: string) => media.library(file);
+
+/** Decoded library stickers by file name (see useAssetImages). */
+export function useLibraryImages(files: string[]): Map<string, HTMLImageElement> {
+  return useImageSet(files, libraryUrl);
 }

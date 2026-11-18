@@ -45,7 +45,7 @@ export function ClipList({
   const highlights = project.stages.highlights;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <div role="group" aria-label="Sort clips" className="inline-flex rounded-md border border-zinc-700 p-0.5">
           {(["time", "score"] as const).map((s) => (
@@ -100,7 +100,7 @@ export function ClipList({
           )}
         </Empty>
       ) : (
-        <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2" aria-label="Clips">
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] items-start gap-2 p-3" aria-label="Clips">
           {sorted.map((clip) => (
             <ClipCard
               key={clip.id}

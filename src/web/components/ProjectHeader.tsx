@@ -5,6 +5,7 @@ import { STAGE_ORDER, type Project, type StageId } from "../../shared/types";
 import { api } from "../lib/api";
 import { Link } from "../lib/router";
 import { useToast } from "../lib/toast";
+import { LibraryButton } from "./LibraryDialog";
 import { SettingsButton } from "./SettingsDialog";
 import { STAGE_LABEL, Stepper } from "./Stepper";
 import { Button, inputClass } from "./ui";
@@ -84,6 +85,7 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
           </span>
         </Button>
         <FindMoments project={project} disabled={!downloaded || busy} applyProject={applyProject} />
+        <LibraryButton />
         <SettingsButton />
       </div>
 

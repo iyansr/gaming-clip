@@ -1,6 +1,9 @@
 import { drawCamBorder, drawCamMask } from "../../shared/compose";
+import { flashAlphaAt, frameTransformAt, overlayStateAt } from "../../shared/effects";
 import type { FrameLayout, LayoutLayer } from "../../shared/layout";
-import type { Rect, Size } from "../../shared/types";
+import type { LookId, LookItem, Rect, Size, TimelineItem } from "../../shared/types";
+import { drawWatermarks, type WatermarkImages } from "../../shared/watermark";
+import { sharedOffscreen } from "./watermarks";
 
 /** Same low-resolution blur the renderer uses (render.ts BLUR_DOWNSCALE / BLUR_SIGMA). */
 const BLUR_DOWNSCALE = 8;
@@ -97,4 +100,121 @@ export class LayoutPainter {
       ctx.restore();
     }
   }
+}
+
+/** Canvas twins of the renderer's looks (src/core/render.ts), on a 1080-wide frame. */
+const LOOK_FILTER: Record<LookId, string> = {
+  deepfry: "contrast(1.8) saturate(3) brightness(1.06)",
+  bw: "grayscale(1)",
+  blur: "blur(16px)",
+};
+
+interface Surface {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+}
+
+/** Everything FramePainter needs for one frame; `items` and `t` are clip-relative (relativeItems). */
+export interface FrameInput {
+  video: HTMLVideoElement;
+  layout: FrameLayout;
+  image: HTMLImageElement | null;
+  output: Size;
+  items: TimelineItem[];
+  t: number;
+}
+
+/**
+ * The layout stage of the paint order: layout -> look -> zoom/shake. The layout is composed once into an offscreen
+ * frame (only when a look or a zoom/shake is active), the look is applied to it as a canvas filter, and the result
+ * is blitted with frameTransformAt's translate/scale, so it matches the renderer's scale-then-crop exactly.
+ */
+export class FramePainter {
+  private readonly layout = new LayoutPainter();
+  private readonly surfaces: (Surface | null)[] = [null, null];
+
+  private surface(slot: 0 | 1, size: Size): Surface {
+    let s = this.surfaces[slot];
+    if (!s) {
+      const canvas = document.createElement("canvas");
+      s = { canvas, ctx: context2d(canvas) };
+      this.surfaces[slot] = s;
+    }
+    if (s.canvas.width !== size.width || s.canvas.height !== size.height) {
+      s.canvas.width = size.width;
+      s.canvas.height = size.height;
+    }
+    return s;
+  }
+
+  paint(ctx: CanvasRenderingContext2D, { video, layout, image, output, items, t }: FrameInput): void {
+    const looks = items
+      .filter((i): i is LookItem => i.kind === "look" && t >= i.start && t < i.end)
+      .map((i) => LOOK_FILTER[i.look])
+      .join(" ");
+    const { scale, ox, oy } = frameTransformAt(items, t, output);
+    const moved = scale !== 1 || ox !== 0 || oy !== 0;
+    if (looks === "" && !moved) {
+      this.layout.paint(ctx, video, layout, image, output);
+      return;
+    }
+
+    const flat = this.surface(0, output);
+    this.layout.paint(flat.ctx, video, layout, image, output);
+    let source = flat.canvas;
+    if (looks !== "") {
+      const looked = this.surface(1, output);
+      looked.ctx.clearRect(0, 0, output.width, output.height);
+      looked.ctx.filter = looks;
+      looked.ctx.drawImage(flat.canvas, 0, 0);
+      looked.ctx.filter = "none";
+      source = looked.canvas;
+    }
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, output.width, output.height);
+    ctx.save();
+    ctx.translate(-ox, -oy);
+    ctx.scale(scale, scale);
+    ctx.drawImage(source, 0, 0);
+    ctx.restore();
+  }
+}
+
+/**
+ * Timed text and stickers over the frame: each element is scaled about its centre and offset by overlayStateAt and
+ * drawn through drawWatermarks with its opacity times the fade. Text waits for the caption fonts.
+ */
+export function drawOverlayItems(
+  ctx: CanvasRenderingContext2D,
+  items: TimelineItem[],
+  t: number,
+  images: WatermarkImages,
+  output: Size,
+  fontsReady: boolean,
+): void {
+  for (const item of items) {
+    if (item.kind !== "overlay") continue;
+    const state = overlayStateAt(item, t);
+    const el = item.element;
+    if (!state || (el.kind === "text" && !fontsReady)) continue;
+    ctx.save();
+    ctx.translate(el.x + state.dx, el.y + state.dy);
+    ctx.scale(state.scale, state.scale);
+    ctx.translate(-el.x, -el.y);
+    drawWatermarks(ctx, [{ ...el, opacity: el.opacity * state.alpha }], images, output, sharedOffscreen);
+    ctx.restore();
+  }
+}
+
+/** Solid flashes over the frame, fading out over each item. */
+export function drawFlashes(ctx: CanvasRenderingContext2D, items: TimelineItem[], t: number, output: Size): void {
+  for (const item of items) {
+    if (item.kind !== "flash") continue;
+    const alpha = flashAlphaAt(item, t);
+    if (alpha <= 0) continue;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = item.color;
+    ctx.fillRect(0, 0, output.width, output.height);
+  }
+  ctx.globalAlpha = 1;
 }

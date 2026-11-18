@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 
+import { PlayerAudio } from "./audio";
+
 /**
  * Owns the hidden source `<video>`, loops playback inside the active clip range and runs the single
  * animation-frame loop that tells the preview canvas when to redraw. Lives outside React so the
@@ -7,6 +9,8 @@ import { useSyncExternalStore } from "react";
  */
 export class Player {
   readonly video: HTMLVideoElement;
+  /** Library sounds and voice effects, in step with `video`. */
+  readonly audio: PlayerAudio;
   time = 0;
   playing = false;
   volume = 1;
@@ -58,6 +62,7 @@ export class Player {
       this.error = v.error?.message || "The source video could not be loaded";
       this.emit();
     });
+    this.audio = new PlayerAudio(v);
     this.raf = requestAnimationFrame(this.tick);
   }
 
@@ -139,6 +144,7 @@ export class Player {
 
   destroy() {
     cancelAnimationFrame(this.raf);
+    this.audio.destroy();
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();

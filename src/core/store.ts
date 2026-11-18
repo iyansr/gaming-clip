@@ -6,6 +6,7 @@ import {
   DEFAULT_CLIP_SETTINGS,
   DEFAULT_OPTIONS,
   DEFAULT_THUMBNAIL,
+  EMPTY_TIMELINE,
   STAGE_ORDER,
   type Project,
   type ProjectOptions,
@@ -109,14 +110,24 @@ export async function getProject(id: string): Promise<Project> {
   }
   const project = JSON.parse(text) as Project;
   // Project files written before thumbnails existed have clips without one; before the custom layout, settings without
-  // `custom`; before watermarks and post text, settings without `watermarks` and clips without `social`.
+  // `custom`; before watermarks and post text, settings without `watermarks` and clips without `social`; before the
+  // editor timeline and intro/outro videos, clips without `timeline` and settings without `intro`/`outro`; before
+  // overlays could replay over the teaser, overlay items without `overTeaser`.
   project.defaults.custom ??= null;
   project.defaults.watermarks ??= [];
+  project.defaults.intro ??= null;
+  project.defaults.outro ??= null;
   for (const clip of project.clips) {
     clip.thumbnail = { ...DEFAULT_THUMBNAIL, ...clip.thumbnail };
     clip.settings.custom ??= null;
     clip.settings.watermarks ??= [];
+    clip.settings.intro ??= null;
+    clip.settings.outro ??= null;
     clip.social ??= null;
+    clip.timeline ??= structuredClone(EMPTY_TIMELINE);
+    for (const item of clip.timeline.items) {
+      if (item.kind === "overlay") item.overTeaser ??= false;
+    }
   }
   return project;
 }

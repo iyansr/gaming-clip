@@ -8,6 +8,8 @@ import { ProjectHeader } from "../components/ProjectHeader";
 import { RenderBar } from "../components/RenderBar";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { resolveThumbnailTime, useThumbnailCandidates } from "../components/ThumbnailEditor";
+import { Inspector } from "../components/timeline/Inspector";
+import { Timeline, TEASER_ID } from "../components/timeline/Timeline";
 import { Transcript } from "../components/Transcript";
 import { Empty } from "../components/ui";
 import { WebcamEditor } from "../components/WebcamEditor";
@@ -69,6 +71,8 @@ function ProjectView({
   const [webcamOpen, setWebcamOpen] = useState(false);
   const [customUi, setCustomUi] = useState<CustomUi>({ selected: "cam", lockAspect: true });
   const [watermarkId, setSelectedWatermark] = useState<string | null>(null);
+  const [itemSel, setItemSel] = useState<{ clipId: string; id: string } | null>(null);
+  const configColumn = useRef<HTMLElement>(null);
 
   const source = project.source;
   const ready = project.stages.download.status === "done" && source !== null;
@@ -114,7 +118,7 @@ function ProjectView({
       if (!(t instanceof HTMLElement)) return true;
       if (t.closest("dialog") || t.isContentEditable) return false;
       if (t instanceof HTMLInputElement) return t.type === "range";
-      if (t instanceof HTMLButtonElement) return t.closest("aside") !== null;
+      if (t instanceof HTMLButtonElement) return t.closest("[data-clip-list]") !== null;
       return !["TEXTAREA", "SELECT", "A", "VIDEO", "SUMMARY"].includes(t.tagName);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -163,6 +167,29 @@ function ProjectView({
   const rendered = clips.filter((c) => c.render.status === "done" && c.render.file);
   const activeView = view && active && view.clipId === active.id ? view.mode : "preview";
 
+  /** The selection only counts while the active clip still has that item (or a teaser). */
+  const selectedItem =
+    active &&
+    itemSel?.clipId === active.id &&
+    (active.timeline.items.some((i) => i.id === itemSel.id) || (itemSel.id === TEASER_ID && active.timeline.teaser))
+      ? itemSel.id
+      : null;
+  const selectItem = (id: string | null) => {
+    setItemSel(active && id ? { clipId: active.id, id } : null);
+    configColumn.current?.scrollTo({ top: 0 });
+  };
+
+  useEffect(() => {
+    if (!player) return;
+    const timed = active?.timeline.items ?? [];
+    player.audio.setPlan({
+      sounds: timed.filter((i) => i.kind === "sound"),
+      voices: timed.filter((i) => i.kind === "voice"),
+      clipStart: active?.start ?? 0,
+      clipEnd: active?.end ?? 0,
+    });
+  }, [player, active?.timeline.items, active?.start, active?.end]);
+
   return (
     <div className="flex h-full flex-col">
       <ProjectHeader
@@ -186,66 +213,14 @@ function ProjectView({
           </Empty>
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(280px,320px)_minmax(0,1fr)]">
-          <aside className="flex min-h-0 flex-col border-r border-zinc-800 bg-zinc-950">
-            <div role="tablist" aria-label="Clip lists" className="flex border-b border-zinc-800">
-              {(
-                [
-                  ["clips", `Clips (${clips.length})`],
-                  ["rendered", `Rendered (${rendered.length})`],
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  role="tab"
-                  type="button"
-                  aria-selected={tab === key}
-                  onClick={() => setTab(key)}
-                  className={cn(
-                    "flex-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                    tab === key
-                      ? "border-indigo-400 text-white"
-                      : "border-transparent text-zinc-400 hover:text-zinc-200",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            {tab === "clips" ? (
-              <ClipList
-                project={project}
-                clips={clips}
-                activeId={active?.id ?? null}
-                sort={sort}
-                onSortChange={setSort}
-                onActivate={setActiveId}
-                onSelect={(clipId, selected) => edit(clipId, { selected }, true)}
-                onSelectAll={(selected) => {
-                  for (const c of clips) if (c.selected !== selected) edit(c.id, { selected }, true);
-                }}
-                onAdd={() => void addClip()}
-              />
-            ) : (
-              <RenderedGallery
-                project={project}
-                clips={rendered}
-                onPlay={(clip) => {
-                  setActiveId(clip.id);
-                  setView({ clipId: clip.id, mode: "rendered" });
-                }}
-              />
-            )}
-          </aside>
-
-          <main className="min-h-0 overflow-y-auto p-4">
-            {active ? (
-              <div
-                className="mx-auto flex w-full flex-col gap-4"
-                style={{ maxWidth: "calc(min(62vh, 620px) * 9 / 16 + 520px)" }}
-              >
-                <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-5">
-                  <div className="sticky top-0 flex-none">
+        <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
+          {/* Wide: left column (preview, timeline, highlights) + a fixed settings column, each scrolling on its own.
+              Narrow: one column in the order preview, timeline, settings, highlights (the left wrapper `contents`). */}
+          <div className="grid gap-4 p-3 lg:h-full lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-0 lg:p-0">
+            <main className="contents lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:p-4">
+              {active ? (
+                <>
+                  <div className="order-1 flex-none justify-self-center lg:order-none lg:self-center">
                     <Preview
                       project={project}
                       clip={active}
@@ -261,35 +236,138 @@ function ProjectView({
                       selectedWatermark={selectedWatermark}
                       onSelectWatermark={setSelectedWatermark}
                       onWatermarksChange={(watermarks) => edit(active.id, { settings: { watermarks } })}
+                      selectedItem={selectedItem}
+                      onSelectItem={selectItem}
+                      onTimelineChange={(timeline) => edit(active.id, { timeline })}
                     />
                   </div>
-                  <div className="min-w-0">
-                    <SettingsPanel
-                      key={active.id}
+                  <div className="order-2 min-w-0 flex-none lg:order-none">
+                    <Timeline
                       project={project}
                       clip={active}
                       player={player}
-                      fontsReady={fonts.ready}
                       edit={edit}
                       flushAll={flushAll}
                       applyProject={applyProject}
-                      candidates={candidates}
-                      onShowThumbnail={() => setView({ clipId: active.id, mode: "thumbnail" })}
+                      selected={selectedItem}
+                      onSelect={selectItem}
                       onShowPreview={() => setView({ clipId: active.id, mode: "preview" })}
-                      customUi={customUi}
-                      onCustomUiChange={setCustomUi}
-                      selectedWatermark={selectedWatermark}
-                      onSelectWatermark={setSelectedWatermark}
-                      onOpenWebcam={() => setWebcamOpen(true)}
-                      onDeleteClip={(c) => void deleteClip(c)}
                     />
                   </div>
+                  {fonts.error && (
+                    <p className="order-2 rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-200 lg:order-none">
+                      {fonts.error}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="order-1 lg:order-none">
+                  <Empty>
+                    <span className="flex flex-col items-center gap-2">
+                      <Film className="size-8 text-zinc-600" aria-hidden />
+                      {clips.length === 0 && project.stages.highlights.status !== "done"
+                        ? "The preview opens once highlights are found, or add a clip by hand."
+                        : "Select or add a clip to preview it."}
+                    </span>
+                  </Empty>
                 </div>
-                {fonts.error && (
-                  <p className="rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-200">
-                    {fonts.error}
-                  </p>
+              )}
+
+              {/* Highlights: picking one loads it into the preview, timeline and settings. */}
+              <section
+                aria-label="Highlights"
+                data-clip-list=""
+                className="order-4 flex-none overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 lg:order-none lg:max-h-[26rem] lg:overflow-y-auto"
+              >
+                <div
+                  role="tablist"
+                  aria-label="Clip lists"
+                  className="sticky top-0 z-10 flex border-b border-zinc-800 bg-zinc-950"
+                >
+                  {(
+                    [
+                      ["clips", `Highlights (${clips.length})`],
+                      ["rendered", `Rendered (${rendered.length})`],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      role="tab"
+                      type="button"
+                      aria-selected={tab === key}
+                      onClick={() => setTab(key)}
+                      className={cn(
+                        "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
+                        tab === key
+                          ? "border-indigo-400 text-white"
+                          : "border-transparent text-zinc-400 hover:text-zinc-200",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {tab === "clips" ? (
+                  <ClipList
+                    project={project}
+                    clips={clips}
+                    activeId={active?.id ?? null}
+                    sort={sort}
+                    onSortChange={setSort}
+                    onActivate={setActiveId}
+                    onSelect={(clipId, selected) => edit(clipId, { selected }, true)}
+                    onSelectAll={(selected) => {
+                      for (const c of clips) if (c.selected !== selected) edit(c.id, { selected }, true);
+                    }}
+                    onAdd={() => void addClip()}
+                  />
+                ) : (
+                  <RenderedGallery
+                    project={project}
+                    clips={rendered}
+                    onPlay={(clip) => {
+                      setActiveId(clip.id);
+                      setView({ clipId: clip.id, mode: "rendered" });
+                    }}
+                  />
                 )}
+              </section>
+            </main>
+
+            {active && (
+              <aside
+                ref={configColumn}
+                aria-label="Settings"
+                className="compact order-3 flex min-w-0 flex-col gap-2 lg:order-none lg:min-h-0 lg:overflow-y-auto lg:border-l lg:border-zinc-800 lg:bg-zinc-950 lg:p-2.5"
+                data-testid="config-column"
+              >
+                <Inspector
+                  project={project}
+                  clip={active}
+                  player={player}
+                  edit={edit}
+                  selected={selectedItem}
+                  onSelect={selectItem}
+                />
+                <SettingsPanel
+                  key={active.id}
+                  project={project}
+                  clip={active}
+                  player={player}
+                  fontsReady={fonts.ready}
+                  edit={edit}
+                  flushAll={flushAll}
+                  applyProject={applyProject}
+                  candidates={candidates}
+                  onShowThumbnail={() => setView({ clipId: active.id, mode: "thumbnail" })}
+                  onShowPreview={() => setView({ clipId: active.id, mode: "preview" })}
+                  customUi={customUi}
+                  onCustomUiChange={setCustomUi}
+                  selectedWatermark={selectedWatermark}
+                  onSelectWatermark={setSelectedWatermark}
+                  onOpenWebcam={() => setWebcamOpen(true)}
+                  onDeleteClip={(c) => void deleteClip(c)}
+                />
                 <Transcript
                   clip={active}
                   words={words}
@@ -297,18 +375,9 @@ function ProjectView({
                   error={transcriptError}
                   player={player}
                 />
-              </div>
-            ) : (
-              <Empty>
-                <span className="flex flex-col items-center gap-2">
-                  <Film className="size-8 text-zinc-600" aria-hidden />
-                  {clips.length === 0 && project.stages.highlights.status !== "done"
-                    ? "The preview opens once highlights are found, or add a clip by hand."
-                    : "Select or add a clip to preview it."}
-                </span>
-              </Empty>
+              </aside>
             )}
-          </main>
+          </div>
         </div>
       )}
 
@@ -336,7 +405,10 @@ function RenderedGallery({
 }) {
   if (clips.length === 0) return <Empty>Finished shorts appear here.</Empty>;
   return (
-    <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2" aria-label="Rendered shorts">
+    <ul
+      className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] items-start gap-2 p-3"
+      aria-label="Rendered shorts"
+    >
       {clips.map((clip) => (
         <li key={clip.id} className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5">
           {clip.thumbnail.file && (

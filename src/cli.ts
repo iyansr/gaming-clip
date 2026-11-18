@@ -1,10 +1,12 @@
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
 
+import { generateEdit } from "./core/autoedit";
 import { BIN, PLATFORM, PORT, projectPaths, VERSION } from "./core/config";
 import { checkDeps } from "./core/doctor";
 import { run } from "./core/exec";
 import { grabJpeg } from "./core/frames";
 import { formatTranscript } from "./core/highlights";
+import { addLibraryItem, listLibrary, removeLibraryItem, renameLibraryItem } from "./core/library";
 import {
   addClip,
   clampFrameTime,
@@ -15,6 +17,7 @@ import {
   parseRect,
   parseSettingsPatch,
   parseThumbnailPatch,
+  parseTimeline,
   patchClip,
   patchProject,
   removeClip,
@@ -39,6 +42,7 @@ import {
   updateProject,
   ValidationError,
 } from "./core/store";
+import { LIBRARY_LIMITS, LIBRARY_TYPES } from "./shared/library";
 import { DONATE_URL, SPONSOR_URL } from "./shared/project";
 import { postText, youtubeDescriptionText } from "./shared/social";
 import { THUMBNAIL_STYLES } from "./shared/thumbnail";
@@ -49,6 +53,7 @@ import {
   type LoudnessEnvelope,
   type Project,
   type StageId,
+  type TimelineItem,
   type Transcript,
 } from "./shared/types";
 
@@ -79,13 +84,26 @@ const USAGE = `Usage: bun run clip <command> [options]
   clip clips rm <id> <clipId>
   clip clips select <id> <clipId,...|all|none>
   clip webcam <id> [--detect | --none | --rect x,y,w,h]
+  clip library list                            sounds, stickers and videos shared by every project
+  clip library add <file> [--name N]            upload a file (type from its extension: mp3, wav, ogg, m4a, png, jpg,
+                                               webp, mp4, mov, webm); --name defaults to the file name
+  clip library rm <file>                       delete an upload; refused while a clip or the defaults use it
+  clip library rename <file> <name>
+  clip timeline <id> <clipId> <timeline.json>  replace the clip's editor timeline (whole ClipTimeline:
+                                               {"items":[...],"teaser":{start,end}|null})
+  clip autoedit <id> [--clips a,b|all] [--append]
+                                               fill the timeline with the AI edit (highlight model when configured,
+                                               else heuristics); default: selected clips. --append keeps the existing
+                                               items and teaser instead of replacing them
   clip settings <id> [--clips a,b|all] [--layout split|fill|fit|custom] [--custom-json <file>] [--subtitles on|off]
                      [--style <id>] [--caption-y 0..1] [--focus-x 0..1] [--watermarks-json <file> | --no-watermarks]
+                     [--intro <file|none>] [--outro <file|none>]
                                                --watermarks-json sets the whole list (max 5, painted in order, under the captions): a JSON array of
                                                {"id":"ab12","kind":"text","x","y" (centre, 1080x1920 px),"rotation":-180..180,"opacity":0..1,"onThumbnail":bool,
                                                "text","font":"Anton|Bangers|Poppins ExtraBold|Poppins SemiBold","size":8..400,"color":"#rrggbb",
                                                "stroke":0..40,"strokeColor":"#rrggbb"} or {...,"kind":"image","file":<uploaded name>,"width":16..2160}
                                                without --clips: project defaults only; all = every clip AND the defaults.
+                                               --intro/--outro play a library video before/after the clip; none clears it.
                                                --layout custom starts from the split layout as free elements; --custom-json
                                                sets the whole free-form layout (and --layout custom): {"background":
                                                {"kind":"blur"} | {"kind":"color","color":"#1e1b4b"} | {"kind":"image","file":<uploaded name>},
@@ -397,6 +415,30 @@ async function readPicks(path: string): Promise<ClipFields[]> {
   });
 }
 
+/** Upload content type from the file extension: one per stored ext, with .jpeg as an extra spelling of .jpg. */
+const UPLOAD_TYPES: Record<string, string> = {};
+for (const [contentType, type] of Object.entries(LIBRARY_TYPES)) UPLOAD_TYPES[type.ext] ??= contentType;
+UPLOAD_TYPES[".jpeg"] = "image/jpeg";
+
+function describeTimelineItem(item: TimelineItem): string {
+  switch (item.kind) {
+    case "zoom":
+      return `zoom ${item.scale}x at ${item.x},${item.y} (${item.ease})`;
+    case "shake":
+      return `shake ${item.intensity}`;
+    case "flash":
+      return `flash ${item.color}`;
+    case "look":
+      return `look ${item.look}`;
+    case "overlay":
+      return `overlay ${item.element.kind === "text" ? item.element.text : item.element.file} (${item.animation})`;
+    case "sound":
+      return `sound ${item.file} volume ${item.volume}`;
+    case "voice":
+      return `voice ${item.preset}`;
+  }
+}
+
 const COMMANDS: Record<string, CommandSpec> = {
   doctor: {
     flags: {},
@@ -702,6 +744,8 @@ const COMMANDS: Record<string, CommandSpec> = {
       "focus-x": "value",
       "watermarks-json": "value",
       "no-watermarks": "bool",
+      intro: "value",
+      outro: "value",
     },
     args: [1, 1],
     async run([id], flags) {
@@ -724,6 +768,10 @@ const COMMANDS: Record<string, CommandSpec> = {
         raw.watermarks = await readJsonFile(flags["watermarks-json"]);
       } else if (flags["no-watermarks"]) {
         raw.watermarks = [];
+      }
+      for (const key of ["intro", "outro"] as const) {
+        const value = flags[key];
+        if (typeof value === "string") raw[key] = value === "none" ? null : value;
       }
       const patch = asUsage(() => parseSettingsPatch(raw));
       let project = await getProject(id!);
@@ -748,10 +796,123 @@ const COMMANDS: Record<string, CommandSpec> = {
           s.layout === "custom" && s.custom
             ? `custom (${s.custom.background.kind} background${s.custom.game ? ", game" : ""}${s.custom.cam ? ", cam" : ""})`
             : s.layout;
-        return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}, watermarks ${s.watermarks.length}`;
+        return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}, watermarks ${s.watermarks.length}, intro ${s.intro ?? "-"}, outro ${s.outro ?? "-"}`;
       };
       console.log(line("defaults:", project.defaults));
       for (const clip of project.clips) console.log(line(`${clip.id}:`.padEnd(9), clip.settings));
+    },
+  },
+
+  "library list": {
+    flags: {},
+    args: [0, 0],
+    async run() {
+      const items = await listLibrary();
+      if (json) return print(items);
+      if (items.length === 0) {
+        console.log("The library is empty. Add a file with: clip library add <file>");
+        return;
+      }
+      const rows = [["FILE", "KIND", "DURATION", "SIZE", "NAME"]];
+      for (const item of items) {
+        rows.push([
+          item.file,
+          item.kind,
+          item.duration === null ? "-" : `${item.duration.toFixed(1)}s`,
+          item.width === null ? "-" : `${item.width}x${item.height}`,
+          item.name,
+        ]);
+      }
+      console.log(table(rows));
+    },
+  },
+
+  "library add": {
+    flags: { name: "value" },
+    args: [1, 1],
+    async run([path], flags) {
+      const file = Bun.file(path!);
+      if (!(await file.exists())) throw new Error(`File not found: ${path}`);
+      const ext = extname(path!).toLowerCase();
+      const contentType = UPLOAD_TYPES[ext];
+      if (!contentType) {
+        throw new UsageError(
+          `Cannot tell the content type of ${path} (supported extensions: ${Object.keys(UPLOAD_TYPES).join(", ")})`,
+        );
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const fallback = basename(path!, ext).slice(0, LIBRARY_LIMITS.nameLength);
+      const item = await addLibraryItem(bytes, contentType, typeof flags.name === "string" ? flags.name : fallback);
+      if (json) return print(item);
+      console.log(`${item.file}  ${item.kind}  ${item.name}`);
+    },
+  },
+
+  "library rm": {
+    flags: {},
+    args: [1, 1],
+    async run([file]) {
+      await removeLibraryItem(file!);
+      if (json) print({ deleted: file });
+      else console.log(`Removed ${file}`);
+    },
+  },
+
+  "library rename": {
+    flags: {},
+    args: [2, 2],
+    async run([file, name]) {
+      const item = await renameLibraryItem(file!, name!);
+      if (json) return print(item);
+      console.log(`${item.file}  ${item.name}`);
+    },
+  },
+
+  timeline: {
+    flags: {},
+    args: [3, 3],
+    async run([id, clipId, path]) {
+      const raw = await readJsonFile(path!);
+      const timeline = asUsage(() => parseTimeline(raw));
+      const project = await patchClip(id!, clipId!, { timeline });
+      const clip = project.clips.find((candidate) => candidate.id === clipId);
+      if (!clip) throw new NotFoundError(`Clip not found: ${clipId}`);
+      if (json) return print(clip.timeline);
+      const teaser = clip.timeline.teaser;
+      console.log(
+        `Clip ${clip.id}: ${clip.timeline.items.length} item(s), teaser ${teaser ? `${teaser.start}s-${teaser.end}s` : "none"}`,
+      );
+      for (const item of clip.timeline.items) {
+        console.log(
+          `  ${item.id.padEnd(12)} ${formatClock(item.start)}-${formatClock(item.end)}  ${describeTimelineItem(item)}`,
+        );
+      }
+    },
+  },
+
+  autoedit: {
+    flags: { clips: "value", append: "bool" },
+    args: [1, 1],
+    async run([id], flags) {
+      let project = await getProject(id!);
+      const clipIds = parseClipList(typeof flags.clips === "string" ? flags.clips : undefined, project, "selected");
+      if (clipIds.length === 0) throw new Error("No clips to edit: select some (clip clips select) or pass --clips");
+      for (const clipId of clipIds) {
+        if (!project.clips.some((clip) => clip.id === clipId)) throw new NotFoundError(`Clip not found: ${clipId}`);
+      }
+      const replace = flags.append !== true;
+      const summary: { clipId: string; items: number; teaser: boolean }[] = [];
+      for (const clipId of clipIds) {
+        if (!json) process.stderr.write(`Editing clip ${clipId}...\n`);
+        project = await generateEdit(project.id, clipId, { replace }, abort.signal);
+        const clip = project.clips.find((candidate) => candidate.id === clipId);
+        if (!clip) throw new Error(`The timeline of clip ${clipId} was not stored: the clip was removed`);
+        summary.push({ clipId, items: clip.timeline.items.length, teaser: clip.timeline.teaser !== null });
+      }
+      if (json) return print(summary);
+      for (const entry of summary) {
+        console.log(`${entry.clipId}: ${entry.items} item(s)${entry.teaser ? ", teaser" : ""}`);
+      }
     },
   },
 
@@ -889,6 +1050,12 @@ const COMMANDS: Record<string, CommandSpec> = {
   },
 };
 
+/** Command groups: `clip <group> <subcommand>`; the subcommand names are only used in error messages. */
+const GROUPS: Record<string, string[]> = {
+  clips: ["set", "add", "rm", "select"],
+  library: ["list", "add", "rm", "rename"],
+};
+
 async function main(argv: string[]): Promise<number> {
   const [first, second, ...rest] = argv;
   if (first === undefined || first === "help" || first === "--help" || first === "-h") {
@@ -896,15 +1063,18 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  const isGroup = first === "clips";
-  const name = isGroup ? `clips ${second ?? ""}` : first;
+  const group = Object.hasOwn(GROUPS, first) ? first : undefined;
+  const name = group ? `${group} ${second ?? ""}` : first;
   const spec = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
-  if (!spec)
+  if (!spec) {
     throw new UsageError(
-      isGroup ? `Unknown clips subcommand "${second ?? ""}" (set, add, rm, select)` : `Unknown command "${first}"`,
+      group
+        ? `Unknown ${group} subcommand "${second ?? ""}" (${GROUPS[group]!.join(", ")})`
+        : `Unknown command "${first}"`,
     );
+  }
   const { positionals, flags } = parseArgs(
-    isGroup ? rest : [second, ...rest].filter((arg): arg is string => arg !== undefined),
+    group ? rest : [second, ...rest].filter((arg): arg is string => arg !== undefined),
     spec,
   );
   json = flags.json === true;

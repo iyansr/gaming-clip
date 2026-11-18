@@ -119,6 +119,9 @@ export interface ClipSettings {
   captionY: number;
   /** Overlays painted on every frame (under the captions), in paint order. */
   watermarks: Watermark[];
+  /** Library video (LibraryItem.file, kind "video") played before / after the clip; null = none. */
+  intro: string | null;
+  outro: string | null;
 }
 
 interface WatermarkBase {
@@ -232,6 +235,124 @@ export interface Clip {
   thumbnail: ClipThumbnail;
   /** Null until generated (manual action). */
   social: ClipSocial | null;
+  /** Effects, overlays and sounds placed on the clip by the editor or the AI edit. */
+  timeline: ClipTimeline;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Editor timeline. Every time is a SOURCE time (like Clip.start/end), so trimming the clip does not
+// move an effect off the moment it belongs to; items outside [clip.start, clip.end] are not rendered.
+// ---------------------------------------------------------------------------------------------
+
+interface TimelineItemBase {
+  /** Stable short random id. */
+  id: string;
+  start: number;
+  /** > start. */
+  end: number;
+}
+
+/** Punch-in: the frame scales about the focus point, which stays where it is on screen. */
+export interface ZoomItem extends TimelineItemBase {
+  kind: "zoom";
+  /** 1.05..3 */
+  scale: number;
+  /** Focus point, 0..1 of the output frame. */
+  x: number;
+  y: number;
+  /** punch: snaps in (0.08 s) and out (0.12 s); smooth: eases over 0.4 s each way. */
+  ease: ZoomEase;
+}
+export type ZoomEase = "punch" | "smooth";
+
+/** Camera shake of the whole frame. */
+export interface ShakeItem extends TimelineItemBase {
+  kind: "shake";
+  /** 0.1..1; 1 = 40 px at 1080 wide. */
+  intensity: number;
+}
+
+/** Solid colour over the frame that fades from 85% to 0 over the item. */
+export interface FlashItem extends TimelineItemBase {
+  kind: "flash";
+  /** #rrggbb */
+  color: string;
+}
+
+export type LookId = "deepfry" | "bw" | "blur";
+/** Colour treatment of the whole frame (under overlays and captions). */
+export interface LookItem extends TimelineItemBase {
+  kind: "look";
+  look: LookId;
+}
+
+export type OverlayAnimation = "pop" | "shake" | "slide" | "none";
+/**
+ * Timed text or sticker. `element` uses the watermark shapes; an image element's `file` is a LIBRARY file
+ * (kind "sticker"), not a project asset. `onThumbnail` is ignored.
+ */
+export interface OverlayItem extends TimelineItemBase {
+  kind: "overlay";
+  element: Watermark;
+  /**
+   * Also drawn over the teaser (hook replay), starting with it and lasting min(item length, teaser length), so an
+   * opening headline is on screen from the first frame of the short. Ignored without a teaser.
+   */
+  overTeaser: boolean;
+  animation: OverlayAnimation;
+}
+
+/** A library sound (kind "sound") mixed over the clip audio from `start`; `end` trims it. */
+export interface SoundItem extends TimelineItemBase {
+  kind: "sound";
+  file: string;
+  /** 0..2 */
+  volume: number;
+}
+
+export type VoiceFx = "earrape" | "bass" | "chipmunk" | "deep" | "echo" | "robot";
+/** Distortion of the clip's own audio over the item. */
+export interface VoiceItem extends TimelineItemBase {
+  kind: "voice";
+  preset: VoiceFx;
+}
+
+export type TimelineItem = ZoomItem | ShakeItem | FlashItem | LookItem | OverlayItem | SoundItem | VoiceItem;
+export type TimelineItemKind = TimelineItem["kind"];
+
+export interface ClipTimeline {
+  items: TimelineItem[];
+  /**
+   * Hook replay: this range of the finished clip (effects and captions included) plays first, then the clip from
+   * its start. Source times inside the clip, 0.5..4 s long. Null = none.
+   */
+  teaser: { start: number; end: number } | null;
+}
+
+/** Frozen template: assign `structuredClone(EMPTY_TIMELINE)`, never the object itself (a shared `items` would leak). */
+export const EMPTY_TIMELINE: ClipTimeline = Object.freeze({
+  items: Object.freeze([]) as unknown as TimelineItem[],
+  teaser: null,
+});
+
+// ---------------------------------------------------------------------------------------------
+// Media library: user uploads shared by every project (workspace/library).
+// ---------------------------------------------------------------------------------------------
+
+export type LibraryKind = "sound" | "sticker" | "video";
+
+export interface LibraryItem {
+  /** Basename in the library directory: 32 hex + extension. */
+  file: string;
+  kind: LibraryKind;
+  /** User-facing name, 1..80 chars; the AI edit picks sounds and stickers by it ("vine boom", "bruh"). */
+  name: string;
+  /** Seconds (sound, video); null for stickers. */
+  duration: number | null;
+  /** Pixels (sticker, video); null for sounds. */
+  width: number | null;
+  height: number | null;
+  addedAt: string;
 }
 
 export type StageId = "download" | "transcribe" | "highlights" | "webcam";
@@ -296,6 +417,8 @@ export const DEFAULT_CLIP_SETTINGS: ClipSettings = {
   captionStyle: "pop",
   captionY: 0.7,
   watermarks: [],
+  intro: null,
+  outro: null,
 };
 
 export const DEFAULT_THUMBNAIL: ClipThumbnail = {

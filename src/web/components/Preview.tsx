@@ -2,24 +2,35 @@ import { Download, Pause, Play, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { buildCues, drawCaptions, type CaptionCue } from "../../shared/captions";
+import { relativeItems } from "../../shared/effects";
 import { computeLayout } from "../../shared/layout";
-import { OUTPUT_SIZE, type Clip, type CustomLayout, type Project, type Watermark, type Word } from "../../shared/types";
+import {
+  OUTPUT_SIZE,
+  type Clip,
+  type ClipTimeline,
+  type CustomLayout,
+  type Project,
+  type TimelineItem,
+  type Watermark,
+  type Word,
+} from "../../shared/types";
 import { drawWatermarks, type WatermarkImages } from "../../shared/watermark";
 import { media } from "../lib/api";
 import { resolveCustom, type CustomUi } from "../lib/custom";
 import { cn, fmtTime } from "../lib/format";
-import { useAssetImage } from "../lib/images";
-import { LayoutPainter } from "../lib/paint";
+import { useAssetImage, useLibraryImages } from "../lib/images";
+import { drawFlashes, drawOverlayItems, FramePainter } from "../lib/paint";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
-import { createOffscreen, drawableWatermarks, useWatermarkBoxes, useWatermarkImages } from "../lib/watermarks";
+import { drawableWatermarks, sharedOffscreen, useWatermarkBoxes, useWatermarkImages } from "../lib/watermarks";
 import { CustomOverlay } from "./CustomOverlay";
 import { ThumbnailCanvas } from "./ThumbnailEditor";
+import { FocusCrosshair } from "./timeline/FocusCrosshair";
 import { Button } from "./ui";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 
-/** 9:16 canvas whose height is min(62vh, 620px). */
-const PREVIEW_WIDTH = "calc(min(62vh, 620px) * 9 / 16)";
+/** 9:16 canvas whose height is min(46vh, 560px): small enough that the timeline below it shows without scrolling. */
+const PREVIEW_WIDTH = "calc(min(46vh, 560px) * 9 / 16)";
 
 export type PreviewMode = "preview" | "rendered" | "thumbnail";
 
@@ -41,6 +52,11 @@ interface Props {
   onSelectWatermark: (id: string | null) => void;
   /** Whole new watermark list from the on-canvas boxes. */
   onWatermarksChange: (watermarks: Watermark[]) => void;
+  /** Id of the selected timeline item (or the teaser), or null. */
+  selectedItem: string | null;
+  onSelectItem: (id: string | null) => void;
+  /** Whole new timeline from the on-canvas boxes. */
+  onTimelineChange: (timeline: ClipTimeline) => void;
 }
 
 /** Everything the draw callback needs, kept in a ref so the frame loop never restarts. */
@@ -53,6 +69,9 @@ interface DrawState {
   /** Watermarks that can be painted now, and their decoded images. */
   marks: Watermark[];
   wmImages: WatermarkImages;
+  /** Timeline items in clip-relative time, and the decoded library stickers they use. */
+  items: TimelineItem[];
+  stickers: WatermarkImages;
 }
 
 export function Preview({
@@ -70,10 +89,13 @@ export function Preview({
   selectedWatermark,
   onSelectWatermark,
   onWatermarksChange,
+  selectedItem,
+  onSelectItem,
+  onTimelineChange,
 }: Props) {
   const toast = useToast();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const painter = useRef<LayoutPainter | null>(null);
+  const painter = useRef<FramePainter | null>(null);
   const [hover, setHover] = useState(false);
 
   const cues = useMemo(
@@ -91,10 +113,35 @@ export function Preview({
   const wmImages = useWatermarkImages(project.id, watermarks);
   const marks = useMemo(() => drawableWatermarks(watermarks, fontsReady), [watermarks, fontsReady]);
   const wmBoxes = useWatermarkBoxes(watermarks, wmImages, fontsReady);
-  const state = useRef<DrawState>({ project, clip, cues, fontsReady, image, marks, wmImages });
+
+  const timeline = clip.timeline;
+  const items = useMemo(
+    () => relativeItems(timeline.items, clip.start, clip.end),
+    [timeline.items, clip.start, clip.end],
+  );
+  const stickerFiles = useMemo(
+    () => [
+      ...new Set(
+        timeline.items.flatMap((i) => (i.kind === "overlay" && i.element.kind === "image" ? [i.element.file] : [])),
+      ),
+    ],
+    [timeline.items],
+  );
+  const stickerImages = useLibraryImages(stickerFiles);
+  const stickers = useMemo<WatermarkImages>(
+    () =>
+      new Map(
+        [...stickerImages].map(([file, img]) => [
+          file,
+          { image: img, width: img.naturalWidth, height: img.naturalHeight },
+        ]),
+      ),
+    [stickerImages],
+  );
+  const state = useRef<DrawState>({ project, clip, cues, fontsReady, image, marks, wmImages, items, stickers });
   // Refreshed at commit time, before the redraw effect below and before the next animation frame.
   useLayoutEffect(() => {
-    state.current = { project, clip, cues, fontsReady, image, marks, wmImages };
+    state.current = { project, clip, cues, fontsReady, image, marks, wmImages, items, stickers };
   });
 
   const rendered = clip.render.status === "done" && clip.render.file ? clip.render.file : null;
@@ -108,7 +155,7 @@ export function Preview({
     if (!canvas || !live) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2D canvas is not available in this browser");
-    const layoutPainter = (painter.current ??= new LayoutPainter());
+    const framePainter = (painter.current ??= new FramePainter());
 
     player.setDraw(() => {
       const {
@@ -119,6 +166,8 @@ export function Preview({
         image: background,
         marks: drawn,
         wmImages: bitmaps,
+        items: timed,
+        stickers: stickerBitmaps,
       } = state.current;
       const video = player.video;
       if (!p.source || video.readyState < 2) {
@@ -133,9 +182,12 @@ export function Preview({
         c.settings,
         OUTPUT_SIZE,
       );
-      layoutPainter.paint(ctx, video, layout, background, OUTPUT_SIZE);
-      // Under the captions, like the renderer: after the layout layers, before the caption strip.
-      drawWatermarks(ctx, drawn, bitmaps, OUTPUT_SIZE, createOffscreen);
+      const t = video.currentTime - c.start;
+      // Paint order (same as the renderer): layout -> look -> zoom/shake -> watermarks -> overlays -> flash -> captions.
+      framePainter.paint(ctx, { video, layout, image: background, output: OUTPUT_SIZE, items: timed, t });
+      drawWatermarks(ctx, drawn, bitmaps, OUTPUT_SIZE, sharedOffscreen);
+      drawOverlayItems(ctx, timed, t, stickerBitmaps, OUTPUT_SIZE, fonts);
+      drawFlashes(ctx, timed, t, OUTPUT_SIZE);
       if (c.settings.subtitles && fonts) {
         drawCaptions(ctx, cs, video.currentTime - c.start, c.settings.captionStyle, {
           width: OUTPUT_SIZE.width,
@@ -153,7 +205,19 @@ export function Preview({
   // Redraw while paused whenever anything the picture depends on changes.
   useEffect(() => {
     player.invalidate();
-  }, [player, project.webcam.rect, project.source, clip.settings, cues, fontsReady, image, wmImages, live]);
+  }, [
+    player,
+    project.webcam.rect,
+    project.source,
+    clip.settings,
+    cues,
+    fontsReady,
+    image,
+    wmImages,
+    items,
+    stickers,
+    live,
+  ]);
 
   useEffect(() => {
     if (!live) player.pause();
@@ -173,6 +237,31 @@ export function Preview({
   const editing = live && !locked;
   /** Boxes only show while paused or hovered, so they never cover playback. */
   const showBoxes = editing && (!playing || hover);
+
+  // Timed overlays are edited like watermarks while they are showing at the playhead (or selected); the display
+  // elements carry the item id so a box maps straight back to its item.
+  const activeOverlayIds = timeline.items
+    .filter((i) => i.kind === "overlay" && (i.id === selectedItem || (time >= i.start && time < i.end)))
+    .map((i) => i.id)
+    .join(",");
+  const overlayElements = useMemo(() => {
+    const ids = new Set(activeOverlayIds.split(","));
+    return timeline.items.flatMap((i) => (i.kind === "overlay" && ids.has(i.id) ? [{ ...i.element, id: i.id }] : []));
+  }, [timeline.items, activeOverlayIds]);
+  const overlayBoxes = useWatermarkBoxes(overlayElements, stickers, fontsReady);
+  const changeOverlays = (next: Watermark[]) => {
+    const byId = new Map(next.map((w) => [w.id, w]));
+    const shownIds = new Set(overlayElements.map((w) => w.id));
+    onTimelineChange({
+      teaser: timeline.teaser,
+      items: timeline.items.flatMap((i): TimelineItem[] => {
+        if (i.kind !== "overlay" || !shownIds.has(i.id)) return [i];
+        const element = byId.get(i.id);
+        return element ? [{ ...i, element: { ...element, id: i.element.id } }] : [];
+      }),
+    });
+  };
+  const focusItem = timeline.items.find((i) => i.id === selectedItem && i.kind === "zoom");
 
   return (
     <div className="flex flex-none flex-col gap-2" style={{ width: PREVIEW_WIDTH }}>
@@ -240,6 +329,27 @@ export function Preview({
                 selected={selectedWatermark}
                 onSelect={onSelectWatermark}
                 onChange={onWatermarksChange}
+              />
+            )}
+            {showBoxes && overlayElements.length > 0 && (
+              <WatermarkOverlay
+                watermarks={overlayElements}
+                boxes={overlayBoxes}
+                selected={selectedItem}
+                onSelect={onSelectItem}
+                onChange={changeOverlays}
+              />
+            )}
+            {showBoxes && focusItem?.kind === "zoom" && (
+              <FocusCrosshair
+                x={focusItem.x}
+                y={focusItem.y}
+                onChange={(x, y) =>
+                  onTimelineChange({
+                    teaser: timeline.teaser,
+                    items: timeline.items.map((i) => (i.id === focusItem.id ? { ...focusItem, x, y } : i)),
+                  })
+                }
               />
             )}
           </>

@@ -25,6 +25,8 @@ export const TOOLS_DIR = join(ROOT, "tools");
 /** All project data lives here: workspace/projects/<id>/... */
 export const WORKSPACE_DIR = resolve(ROOT, Bun.env.GCLIP_WORKSPACE || "workspace");
 export const PROJECTS_DIR = join(WORKSPACE_DIR, "projects");
+/** User uploads shared by every project: sounds, stickers and intro/outro videos. Created on demand. */
+export const LIBRARY_DIR = join(WORKSPACE_DIR, "library");
 export const MODELS_DIR = resolve(ROOT, Bun.env.GCLIP_MODELS || "models");
 export const FONTS_DIR = join(ROOT, "assets/fonts");
 

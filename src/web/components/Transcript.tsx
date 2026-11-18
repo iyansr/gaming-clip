@@ -45,7 +45,7 @@ export function Transcript({
   }, [active, player]);
 
   return (
-    <Panel title="Transcript">
+    <Panel title="Transcript" collapsible defaultOpen={false}>
       {loading ? (
         <Empty>Loading transcript...</Empty>
       ) : error ? (

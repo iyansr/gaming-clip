@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AppFooter } from "./components/AppFooter";
+import { LibraryProvider } from "./components/LibraryDialog";
 import { SettingsProvider } from "./components/SettingsDialog";
 import { Link, usePath } from "./lib/router";
 import { ToastProvider } from "./lib/toast";
@@ -88,7 +89,9 @@ createRoot(root).render(
   <ErrorBoundary>
     <ToastProvider>
       <SettingsProvider>
-        <Shell />
+        <LibraryProvider>
+          <Shell />
+        </LibraryProvider>
       </SettingsProvider>
     </ToastProvider>
   </ErrorBoundary>,
