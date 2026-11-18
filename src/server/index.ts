@@ -308,6 +308,10 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
   const server = Bun.serve({
     hostname: HOST,
     port,
+    // Bun closes a request that is silent for 10 s by default ("timed out a request after 10 seconds",
+    // ECONNRESET in the browser). Several routes are slow by design: AI calls (post text, highlights, "Test")
+    // and frame extraction from long videos. 255 s is Bun's maximum; the event stream turns it off itself.
+    idleTimeout: 255,
     // Opt-in only: Bun's dev mode (HMR) ties the process to the browser tab and can exit when the
     // tab goes away, which would kill queued renders. `bun run dev` sets NODE_ENV=development.
     development: Bun.env.NODE_ENV === "development",
@@ -568,8 +572,10 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
       },
 
       "/media/:id/source": {
-        GET: (req) =>
+        GET: (req, srv) =>
           api(req, async () => {
+            // A paused player stops reading for as long as the user likes; the browser resumes with a new Range.
+            srv.timeout(req, 0);
             requireDownloaded(await getProject(req.params.id));
             return serveFile(projectPaths(req.params.id).source, { "Cache-Control": "no-cache" });
           }),
@@ -620,8 +626,9 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
       },
 
       "/media/:id/clips/:file": {
-        GET: (req) =>
+        GET: (req, srv) =>
           api(req, async () => {
+            srv.timeout(req, 0);
             await getProject(req.params.id);
             const file = plainFileName(req.params.file);
             const headers: Record<string, string> = { "Cache-Control": "no-cache" };
