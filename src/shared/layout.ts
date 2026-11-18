@@ -69,7 +69,13 @@ export function computeLayout(
     if (game) layers.push({ role: "game", blur: false, src: game.src, dst: game.dst });
     if (cam) {
       const { feather, radius, border, borderColor } = cam;
-      layers.push({ role: "cam", blur: false, src: cam.src, dst: cam.dst, cam: { feather, radius, border, borderColor } });
+      layers.push({
+        role: "cam",
+        blur: false,
+        src: cam.src,
+        dst: cam.dst,
+        cam: { feather, radius, border, borderColor },
+      });
     }
     return {
       mode,

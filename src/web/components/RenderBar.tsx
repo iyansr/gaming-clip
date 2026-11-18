@@ -1,5 +1,6 @@
-import { useState } from "react";
 import { CheckCircle2, Clapperboard, X } from "lucide-react";
+import { useState } from "react";
+
 import type { Clip, Project } from "../../shared/types";
 import { api } from "../lib/api";
 import { useToast } from "../lib/toast";
@@ -18,10 +19,20 @@ export function RenderBar({ project, clips, flushAll, applyProject }: Props) {
   const [batchIds, setBatchIds] = useState<string[]>([]);
   const active = clips.filter((c) => c.render.status === "queued" || c.render.status === "rendering");
   const finished = clips.filter((c) => c.render.status === "done").length;
-  const todo = clips.filter((c) => c.selected && c.render.status !== "done" && c.render.status !== "queued" && c.render.status !== "rendering");
+  const todo = clips.filter(
+    (c) => c.selected && c.render.status !== "done" && c.render.status !== "queued" && c.render.status !== "rendering",
+  );
   // Clips of the batch started from this page, plus anything queued by someone else (CLI, other tab).
-  const batch = clips.filter((c) => batchIds.includes(c.id) || c.render.status === "queued" || c.render.status === "rendering");
-  const overall = batch.length === 0 ? 0 : batch.reduce((sum, c) => sum + (c.render.status === "done" ? 1 : c.render.status === "rendering" ? c.render.progress : 0), 0) / batch.length;
+  const batch = clips.filter(
+    (c) => batchIds.includes(c.id) || c.render.status === "queued" || c.render.status === "rendering",
+  );
+  const overall =
+    batch.length === 0
+      ? 0
+      : batch.reduce(
+          (sum, c) => sum + (c.render.status === "done" ? 1 : c.render.status === "rendering" ? c.render.progress : 0),
+          0,
+        ) / batch.length;
   const ready = project.stages.download.status === "done";
 
   const render = async () => {
@@ -70,7 +81,11 @@ export function RenderBar({ project, clips, flushAll, applyProject }: Props) {
             <Clapperboard className="size-4" aria-hidden /> Render {todo.length} selected
           </Button>
           <span className="text-xs text-zinc-400">
-            {todo.length === 0 ? (clips.some((c) => c.selected) ? "Every selected clip is already rendered." : "Tick clips in the list to render them.") : "Renders a couple of clips at a time."}
+            {todo.length === 0
+              ? clips.some((c) => c.selected)
+                ? "Every selected clip is already rendered."
+                : "Tick clips in the list to render them."
+              : "Renders a couple of clips at a time."}
           </span>
         </>
       )}

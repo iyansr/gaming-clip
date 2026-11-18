@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, ImageIcon, Loader2, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
 import { computeLayout } from "../../shared/layout";
 import { drawThumbnail, THUMBNAIL_STYLES, type ThumbnailContext } from "../../shared/thumbnail";
 import { OUTPUT_SIZE, type Clip, type Project } from "../../shared/types";
@@ -19,28 +20,32 @@ export interface CandidateState {
   error: string | null;
 }
 
+const LOADING: CandidateState = { list: null, error: null };
+
 /** Suggested cover frames of one clip; refetched when the saved range or the webcam rectangle changes. */
 export function useThumbnailCandidates(project: Project, clipId: string | null): CandidateState {
   const saved = project.clips.find((c) => c.id === clipId);
-  const key = saved && project.source ? `${saved.id}|${saved.start}|${saved.end}|${JSON.stringify(project.webcam.rect)}` : null;
-  const [state, setState] = useState<CandidateState>({ list: null, error: null });
+  const key =
+    saved && project.source ? `${saved.id}|${saved.start}|${saved.end}|${JSON.stringify(project.webcam.rect)}` : null;
+  const request = key && clipId ? `${project.id}|${key}` : null;
+  // The result remembers which request produced it, so a changed request reads as "loading" without a reset effect.
+  const [result, setResult] = useState<{ request: string; state: CandidateState } | null>(null);
   useEffect(() => {
-    setState({ list: null, error: null });
-    if (!key || !clipId) return;
+    if (!request || !clipId) return;
     let cancelled = false;
     api
       .thumbnailCandidates(project.id, clipId)
       .then((list) => {
-        if (!cancelled) setState({ list, error: null });
+        if (!cancelled) setResult({ request, state: { list, error: null } });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setState({ list: [], error: errorMessage(e) });
+        if (!cancelled) setResult({ request, state: { list: [], error: errorMessage(e) } });
       });
     return () => {
       cancelled = true;
     };
-  }, [project.id, clipId, key]);
-  return state;
+  }, [project.id, clipId, request]);
+  return request !== null && result?.request === request ? result.state : LOADING;
 }
 
 /** Source time the cover shows: the chosen one, else the best suggestion; null until suggestions arrive. */
@@ -65,7 +70,11 @@ function useFrameImage(url: string | null): { image: HTMLImageElement | null; lo
   }, [url]);
   const current = loaded && loaded.url === url ? loaded : null;
   // Keep showing the previous frame while the next one loads, so scrubbing does not flash.
-  return { image: current?.image ?? loaded?.image ?? null, loading: url !== null && current === null, error: current !== null && current.image === null };
+  return {
+    image: current?.image ?? loaded?.image ?? null,
+    loading: url !== null && current === null,
+    error: current !== null && current.image === null,
+  };
 }
 
 function headlineOf(clip: Clip): string {
@@ -85,15 +94,27 @@ function createCanvas(width: number, height: number): ThumbnailContext {
   canvas.height = height;
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("2D canvas is not available in this browser");
-  return ctx as unknown as ThumbnailContext;
+  return ctx;
 }
 
-function backgroundOpt(image: HTMLImageElement | null): { image: unknown; size: { width: number; height: number } } | undefined {
+function backgroundOpt(
+  image: HTMLImageElement | null,
+): { image: unknown; size: { width: number; height: number } } | undefined {
   return image ? { image, size: { width: image.naturalWidth, height: image.naturalHeight } } : undefined;
 }
 
 /** The cover exactly as the generator will write it: same layout geometry, same drawing code. */
-export function ThumbnailCanvas({ project, clip, time, fontsReady }: { project: Project; clip: Clip; time: number | null; fontsReady: boolean }) {
+export function ThumbnailCanvas({
+  project,
+  clip,
+  time,
+  fontsReady,
+}: {
+  project: Project;
+  clip: Clip;
+  time: number | null;
+  fontsReady: boolean;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   const source = project.source;
   const url = source && time !== null ? media.frame(project.id, time, source.width) : null;
@@ -113,24 +134,45 @@ export function ThumbnailCanvas({ project, clip, time, fontsReady }: { project: 
     const sourceSize = { width: source.width, height: source.height };
     const layout = computeLayout(sourceSize, webcam, { layout: mode, focusX, custom }, OUTPUT_SIZE);
     drawThumbnail(
-      ctx as unknown as ThumbnailContext,
+      ctx,
       image,
       { width: image.naturalWidth, height: image.naturalHeight },
       layout,
-      { text: fontsReady ? text : "", styleId: style, textY, sourceSize, backgroundImage: backgroundOpt(background), createCanvas },
+      {
+        text: fontsReady ? text : "",
+        styleId: style,
+        textY,
+        sourceSize,
+        backgroundImage: backgroundOpt(background),
+        createCanvas,
+      },
       OUTPUT_SIZE,
     );
   }, [image, background, source, webcam, mode, focusX, custom, text, style, textY, fontsReady]);
 
   return (
     <>
-      <canvas ref={ref} width={OUTPUT_SIZE.width} height={OUTPUT_SIZE.height} className="size-full" aria-label={`Thumbnail preview: ${text || "no headline"}`} />
+      <canvas
+        ref={ref}
+        width={OUTPUT_SIZE.width}
+        height={OUTPUT_SIZE.height}
+        className="size-full"
+        aria-label={`Thumbnail preview: ${text || "no headline"}`}
+      />
       {(loading || time === null) && (
-        <div className="absolute top-2 right-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-xs text-zinc-200" role="status">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden /> {time === null ? "Finding a frame" : "Loading frame"}
+        <div
+          className="absolute top-2 right-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-xs text-zinc-200"
+          role="status"
+        >
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />{" "}
+          {time === null ? "Finding a frame" : "Loading frame"}
         </div>
       )}
-      {error && <div className="absolute inset-x-2 top-2 rounded bg-red-950/90 p-2 text-xs text-red-100">Could not load the frame at {time?.toFixed(2)}s.</div>}
+      {error && (
+        <div className="absolute inset-x-2 top-2 rounded bg-red-950/90 p-2 text-xs text-red-100">
+          Could not load the frame at {time?.toFixed(2)}s.
+        </div>
+      )}
     </>
   );
 }
@@ -174,7 +216,7 @@ function StyleTile({
     if (!image || !source || !fontsReady) return;
     const sourceSize = { width: source.width, height: source.height };
     drawThumbnail(
-      ctx as unknown as ThumbnailContext,
+      ctx,
       image,
       { width: image.naturalWidth, height: image.naturalHeight },
       computeLayout(sourceSize, webcam, { layout: mode, focusX, custom }, OUTPUT_SIZE),
@@ -189,10 +231,15 @@ function StyleTile({
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`Thumbnail style ${name}`}
-      className={cn("relative overflow-hidden rounded-md border-2 transition-colors", selected ? "border-indigo-400" : "border-zinc-800 hover:border-zinc-600")}
+      className={cn(
+        "relative overflow-hidden rounded-md border-2 transition-colors",
+        selected ? "border-indigo-400" : "border-zinc-800 hover:border-zinc-600",
+      )}
     >
       <canvas ref={ref} width={TILE.width} height={TILE.height} className="block aspect-[18/11] w-full" />
-      <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 text-[10px] leading-4 font-medium text-zinc-100">{name}</span>
+      <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 text-[10px] leading-4 font-medium text-zinc-100">
+        {name}
+      </span>
     </button>
   );
 }
@@ -210,7 +257,17 @@ interface PanelProps {
   onShow: () => void;
 }
 
-export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, edit, flushAll, applyProject, onShow }: PanelProps) {
+export function ThumbnailPanel({
+  project,
+  clip,
+  player,
+  fontsReady,
+  candidates,
+  edit,
+  flushAll,
+  applyProject,
+  onShow,
+}: PanelProps) {
   const toast = useToast();
   const thumb = clip.thumbnail;
   const [textDraft, setTextDraft] = useState<string | null>(null);
@@ -301,11 +358,21 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
           </span>
         </label>
         <label className="flex cursor-pointer items-center gap-2 text-sm">
-          <input type="checkbox" role="switch" checked={noText} onChange={(e) => set({ text: e.target.checked ? "" : null }, true)} className="size-4" />
+          <input
+            type="checkbox"
+            role="switch"
+            aria-checked={noText}
+            checked={noText}
+            onChange={(e) => set({ text: e.target.checked ? "" : null }, true)}
+            className="size-4"
+          />
           No text, frame only
         </label>
 
-        <div className={cn("grid grid-cols-3 gap-2", noText && "pointer-events-none opacity-40")} aria-disabled={noText}>
+        <div
+          className={cn("grid grid-cols-3 gap-2", noText && "pointer-events-none opacity-40")}
+          aria-disabled={noText}
+        >
           {THUMBNAIL_STYLES.map((s) => (
             <StyleTile
               key={s.id}
@@ -327,7 +394,15 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
             <span>Headline vertical position</span>
             <span className="text-zinc-200 tabular-nums">{Math.round(thumb.textY * 100)}%</span>
           </span>
-          <input type="range" min={0.05} max={0.95} step={0.005} value={thumb.textY} disabled={noText} onChange={(e) => set({ textY: Number(e.target.value) })} />
+          <input
+            type="range"
+            min={0.05}
+            max={0.95}
+            step={0.005}
+            value={thumb.textY}
+            disabled={noText}
+            onChange={(e) => set({ textY: Number(e.target.value) })}
+          />
         </label>
 
         <div className="flex flex-col gap-2">
@@ -340,7 +415,12 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
               </span>
             </span>
             <span className="flex gap-1.5">
-              <Button small variant={thumb.time === null ? "primary" : "secondary"} aria-pressed={thumb.time === null} onClick={() => set({ time: null }, true)}>
+              <Button
+                small
+                variant={thumb.time === null ? "primary" : "secondary"}
+                aria-pressed={thumb.time === null}
+                onClick={() => set({ time: null }, true)}
+              >
                 <Sparkles className="size-3.5" aria-hidden /> Auto
               </Button>
               <Button
@@ -355,7 +435,8 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
           {candidates.error && <p className="text-xs text-red-300">Could not suggest frames: {candidates.error}</p>}
           {candidates.list === null ? (
             <p className="flex items-center gap-1.5 text-xs text-zinc-500">
-              <Loader2 className="size-3.5 animate-spin" aria-hidden /> Looking for sharp frames near the loudest moments
+              <Loader2 className="size-3.5 animate-spin" aria-hidden /> Looking for sharp frames near the loudest
+              moments
             </p>
           ) : (
             strip.length > 0 && (
@@ -369,9 +450,17 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
                         onClick={() => set({ time: candidate.time }, true)}
                         aria-pressed={chosen}
                         aria-label={`Use the frame at ${fmtTime(candidate.time)}, score ${Math.round(candidate.score * 100)}`}
-                        className={cn("relative block w-full overflow-hidden rounded border-2", chosen ? "border-indigo-400" : "border-zinc-800 hover:border-zinc-600")}
+                        className={cn(
+                          "relative block w-full overflow-hidden rounded border-2",
+                          chosen ? "border-indigo-400" : "border-zinc-800 hover:border-zinc-600",
+                        )}
                       >
-                        <img src={media.frame(project.id, candidate.time, 240)} alt="" loading="lazy" className="block aspect-video w-full bg-zinc-950 object-cover" />
+                        <img
+                          src={media.frame(project.id, candidate.time, 240)}
+                          alt=""
+                          loading="lazy"
+                          className="block aspect-video w-full bg-zinc-950 object-cover"
+                        />
                         <span className="absolute right-0.5 bottom-0.5 rounded bg-black/70 px-1 text-[10px] leading-4 text-zinc-100 tabular-nums">
                           {fmtTime(candidate.time)} · {Math.round(candidate.score * 100)}
                         </span>
@@ -399,7 +488,11 @@ export function ThumbnailPanel({ project, clip, player, fontsReady, candidates, 
 
         <div className="flex items-center gap-2">
           <Button variant="primary" onClick={() => void generate()} disabled={generating || !source} className="flex-1">
-            {generating ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <ImageIcon className="size-4" aria-hidden />}
+            {generating ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+            ) : (
+              <ImageIcon className="size-4" aria-hidden />
+            )}
             {thumb.file ? "Regenerate thumbnail" : "Generate thumbnail"}
           </Button>
           {thumb.file && (

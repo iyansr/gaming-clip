@@ -1,7 +1,7 @@
 import { rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { STAGE_ORDER, type Project, type SourceMeta, type StageId } from "../shared/types";
-import { FONTS_DIR, HOST, PORT, llmConfigured, projectPaths } from "../core/config";
+
+import { FONTS_DIR, HOST, MODELS_DIR, PORT, VERSION, WORKSPACE_DIR, projectPaths } from "../core/config";
 import { checkDeps } from "../core/doctor";
 import { grabJpeg } from "../core/frames";
 import {
@@ -12,6 +12,7 @@ import {
   enqueueRender,
   recoverInterrupted,
 } from "../core/jobs";
+import { testLlm } from "../core/llm";
 import {
   addAsset,
   addClip,
@@ -29,6 +30,7 @@ import {
   removeClip,
   thumbnailCandidates,
 } from "../core/pipeline";
+import { llmConfigured, publicSettings, updateSettings } from "../core/settings";
 import {
   ConflictError,
   createProject,
@@ -38,9 +40,10 @@ import {
   NotFoundError,
   PayloadTooLargeError,
   subscribe,
-  updateProject,
   ValidationError,
 } from "../core/store";
+import { listWhisperModels, startWhisperDownload } from "../core/whisper-models";
+import { STAGE_ORDER, type Project, type SourceMeta, type StageId } from "../shared/types";
 import index from "../web/index.html";
 
 const EVENT_MIN_INTERVAL_MS = 200;
@@ -56,8 +59,8 @@ function errorResponse(error: unknown): Response {
   return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
 }
 
-const WILDCARD_HOSTS = ["0.0.0.0", "::"];
-const ALLOWED_HOSTNAMES = ["localhost", "127.0.0.1", "[::1]", HOST.includes(":") ? `[${HOST}]` : HOST];
+const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
+const ALLOWED_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]", HOST.includes(":") ? `[${HOST}]` : HOST]);
 
 const JSON_CONTENT_TYPE = /^application\/json\s*(;|$)/i;
 /** Only the asset upload route takes raw image bodies. */
@@ -70,21 +73,26 @@ const IMAGE_CONTENT_TYPE = new RegExp(`^(${Object.keys(ASSET_TYPES).join("|")})\
  */
 function rejectUnsafe(req: Request, bodyType: RegExp): Response | null {
   const host = req.headers.get("host") ?? "";
-  if (!WILDCARD_HOSTS.includes(HOST)) {
+  if (!WILDCARD_HOSTS.has(HOST)) {
     let hostname = "";
     try {
       hostname = new URL(`http://${host}`).hostname;
     } catch {
       // malformed Host header: rejected below
     }
-    if (!ALLOWED_HOSTNAMES.includes(hostname)) return Response.json({ error: `Host "${host}" is not allowed` }, { status: 403 });
+    if (!ALLOWED_HOSTNAMES.has(hostname))
+      return Response.json({ error: `Host "${host}" is not allowed` }, { status: 403 });
   }
   const origin = req.headers.get("origin");
   if (origin !== null && origin !== `http://${host}`) {
     return Response.json({ error: `Cross-origin request from "${origin}" is not allowed` }, { status: 403 });
   }
   const hasBody = req.headers.has("transfer-encoding") || Number(req.headers.get("content-length") ?? 0) > 0;
-  if ((req.method === "POST" || req.method === "PATCH") && hasBody && !bodyType.test(req.headers.get("content-type") ?? "")) {
+  if (
+    (req.method === "POST" || req.method === "PATCH") &&
+    hasBody &&
+    !bodyType.test(req.headers.get("content-type") ?? "")
+  ) {
     const wanted = bodyType === JSON_CONTENT_TYPE ? "application/json" : Object.keys(ASSET_TYPES).join(", ");
     return Response.json({ error: `Content-Type must be ${wanted}` }, { status: 415 });
   }
@@ -92,7 +100,11 @@ function rejectUnsafe(req: Request, bodyType: RegExp): Response | null {
 }
 
 /** Applies the request checks, runs a handler and turns thrown errors into `{ error }` responses. */
-async function api(req: Request, handler: () => Promise<Response> | Response, bodyType = JSON_CONTENT_TYPE): Promise<Response> {
+async function api(
+  req: Request,
+  handler: () => Promise<Response> | Response,
+  bodyType = JSON_CONTENT_TYPE,
+): Promise<Response> {
   const rejected = rejectUnsafe(req, bodyType);
   if (rejected) return rejected;
   try {
@@ -187,7 +199,8 @@ function ensureThumbnail(project: Project): Promise<string> {
 }
 
 function requireDownloaded(project: Project): SourceMeta {
-  if (project.stages.download.status !== "done" || !project.source) throw new NotFoundError("Source not downloaded yet");
+  if (project.stages.download.status !== "done" || !project.source)
+    throw new NotFoundError("Source not downloaded yet");
   return project.source;
 }
 
@@ -234,15 +247,18 @@ async function projectEvents(req: Request, server: Bun.Server<undefined>, id: st
       /** Trailing-edge throttle: at most one event per interval, always carrying the latest state. */
       const schedule = () => {
         if (closed || timer !== undefined) return;
-        timer = setTimeout(flush, Math.max(0, lastSent + EVENT_MIN_INTERVAL_MS - Date.now()));
+        timer = setTimeout(() => void flush(), Math.max(0, lastSent + EVENT_MIN_INTERVAL_MS - Date.now()));
       };
 
       const unsubscribe = subscribe((project) => {
         if (project.id === id) schedule();
       });
-      const poll = setInterval(async () => {
-        const info = await stat(jsonPath).catch(() => null);
-        if (!info || info.mtimeMs !== lastMtime) schedule();
+      const poll = setInterval(() => {
+        void stat(jsonPath)
+          .catch(() => null)
+          .then((info) => {
+            if (!info || info.mtimeMs !== lastMtime) schedule();
+          });
       }, EVENT_POLL_MS);
       const heartbeat = setInterval(() => send(": ping\n\n"), EVENT_HEARTBEAT_MS);
       cleanup = () => {
@@ -269,6 +285,14 @@ async function projectEvents(req: Request, server: Bun.Server<undefined>, id: st
   });
 }
 
+/** Settings for the UI (the API key is never included) plus read-only facts about this installation. */
+function settingsResponse(port: number | undefined): Response {
+  return Response.json({
+    ...publicSettings(),
+    info: { port, host: HOST, workspace: WORKSPACE_DIR, models: MODELS_DIR, version: VERSION },
+  });
+}
+
 export async function startServer(port: number = PORT): Promise<Bun.Server<undefined>> {
   await recoverInterrupted();
 
@@ -277,13 +301,39 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
     port,
     // Opt-in only: Bun's dev mode (HMR) ties the process to the browser tab and can exit when the
     // tab goes away, which would kill queued renders. `bun run dev` sets NODE_ENV=development.
-    development: process.env.NODE_ENV === "development",
+    development: Bun.env.NODE_ENV === "development",
     routes: {
+      // Bun bundles the HTML import (with Tailwind, through bunfig.toml) when the server starts.
       "/": index,
       "/project/*": index,
 
       "/api/health": {
         GET: (req) => api(req, async () => Response.json({ deps: await checkDeps(), llm: llmConfigured() })),
+      },
+
+      "/api/settings": {
+        GET: (req, srv) => api(req, () => settingsResponse(srv.port)),
+        PATCH: (req, srv) =>
+          api(req, async () => {
+            await updateSettings(await readBody(req));
+            return settingsResponse(srv.port);
+          }),
+      },
+
+      "/api/settings/test-ai": {
+        POST: (req) => api(req, async () => Response.json(await testLlm())),
+      },
+
+      "/api/settings/whisper-models": {
+        GET: (req) => api(req, async () => Response.json(await listWhisperModels())),
+      },
+
+      "/api/settings/whisper-models/:name/download": {
+        POST: (req) =>
+          api(req, async () => {
+            await startWhisperDownload(req.params.name);
+            return Response.json(await listWhisperModels(), { status: 202 });
+          }),
       },
 
       "/api/projects": {
@@ -297,7 +347,8 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
               throw new ValidationError("inputs must be a non-empty array of at most 50 URLs or file paths");
             }
             const cleaned = inputs.map((input) => {
-              if (typeof input !== "string" || input.trim() === "") throw new ValidationError("Every input must be a non-empty string");
+              if (typeof input !== "string" || input.trim() === "")
+                throw new ValidationError("Every input must be a non-empty string");
               return input.trim();
             });
             const options = parseOptions(body.options ?? {});
@@ -335,7 +386,10 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
             async () => {
               await getProject(req.params.id);
               const bytes = await readBytes(req, MAX_ASSET_BYTES);
-              return Response.json({ file: await addAsset(req.params.id, bytes, req.headers.get("content-type") ?? "") }, { status: 201 });
+              return Response.json(
+                { file: await addAsset(req.params.id, bytes, req.headers.get("content-type") ?? "") },
+                { status: 201 },
+              );
             },
             IMAGE_CONTENT_TYPE,
           ),
@@ -369,15 +423,20 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
           api(req, async () => {
             const body = await readBody(req);
             noUnknownKeys(body, ["start", "end", "title"]);
-            if (body.title !== undefined && typeof body.title !== "string") throw new ValidationError("title must be a string");
+            if (body.title !== undefined && typeof body.title !== "string")
+              throw new ValidationError("title must be a string");
             await getProject(req.params.id);
-            return Response.json(await addClip(req.params.id, requireNumber(body, "start"), requireNumber(body, "end"), body.title));
+            return Response.json(
+              await addClip(req.params.id, requireNumber(body, "start"), requireNumber(body, "end"), body.title),
+            );
           }),
       },
 
       "/api/projects/:id/clips/:clipId": {
         PATCH: (req) =>
-          api(req, async () => Response.json(await patchClip(req.params.id, req.params.clipId, parseClipPatch(await readBody(req))))),
+          api(req, async () =>
+            Response.json(await patchClip(req.params.id, req.params.clipId, parseClipPatch(await readBody(req)))),
+          ),
         DELETE: (req) => api(req, async () => Response.json(await removeClip(req.params.id, req.params.clipId))),
       },
 
@@ -466,7 +525,10 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
           api(req, async () => {
             await getProject(req.params.id);
             const file = plainFileName(req.params.file);
-            return serveFile(join(assetsDir(req.params.id), file), { "Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff" });
+            return serveFile(join(assetsDir(req.params.id), file), {
+              "Cache-Control": "no-cache",
+              "X-Content-Type-Options": "nosniff",
+            });
           }),
       },
 
@@ -485,7 +547,9 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
 
       "/fonts/:file": {
         GET: (req) =>
-          api(req, () => serveFile(join(FONTS_DIR, plainFileName(req.params.file)), { "Cache-Control": "public, max-age=86400" })),
+          api(req, () =>
+            serveFile(join(FONTS_DIR, plainFileName(req.params.file)), { "Cache-Control": "public, max-age=86400" }),
+          ),
       },
     },
     fetch: () => Response.json({ error: "Not found" }, { status: 404 }),

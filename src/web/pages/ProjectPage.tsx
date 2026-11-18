@@ -1,13 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Film, Loader2, Play } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
 import type { Clip, Project } from "../../shared/types";
-import { api, media } from "../lib/api";
-import { clamp, cn, floor1, fmtTime } from "../lib/format";
-import type { CustomUi } from "../lib/custom";
-import { useCaptionFonts, useClipEdits, useProjectStream, useTranscriptWords } from "../lib/hooks";
-import { Player } from "../lib/player";
-import { Link } from "../lib/router";
-import { useToast } from "../lib/toast";
 import { ClipList, sortClips, type ClipSort } from "../components/ClipList";
 import { Preview, type PreviewMode } from "../components/Preview";
 import { ProjectHeader } from "../components/ProjectHeader";
@@ -15,8 +9,15 @@ import { RenderBar } from "../components/RenderBar";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { resolveThumbnailTime, useThumbnailCandidates } from "../components/ThumbnailEditor";
 import { Transcript } from "../components/Transcript";
-import { WebcamEditor } from "../components/WebcamEditor";
 import { Empty } from "../components/ui";
+import { WebcamEditor } from "../components/WebcamEditor";
+import { api, media } from "../lib/api";
+import type { CustomUi } from "../lib/custom";
+import { clamp, cn, floor1, fmtTime } from "../lib/format";
+import { useCaptionFonts, useClipEdits, useProjectStream, useTranscriptWords } from "../lib/hooks";
+import { Player } from "../lib/player";
+import { Link } from "../lib/router";
+import { useToast } from "../lib/toast";
 
 export function ProjectPage({ id }: { id: string }) {
   const { project, online, missing, applyProject } = useProjectStream(id);
@@ -25,7 +26,10 @@ export function ProjectPage({ id }: { id: string }) {
       <div className="grid h-full place-items-center">
         <div className="flex flex-col items-center gap-3 text-center">
           <p className="text-zinc-300">{missing}</p>
-          <Link href="/" className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500">
+          <Link
+            href="/"
+            className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+          >
             Back to projects
           </Link>
         </div>
@@ -44,7 +48,15 @@ export function ProjectPage({ id }: { id: string }) {
   return <ProjectView project={project} online={online} applyProject={applyProject} />;
 }
 
-function ProjectView({ project, online, applyProject }: { project: Project; online: boolean; applyProject: (p: Project) => void }) {
+function ProjectView({
+  project,
+  online,
+  applyProject,
+}: {
+  project: Project;
+  online: boolean;
+  applyProject: (p: Project) => void;
+}) {
   const toast = useToast();
   const { clips, edit, flushAll, discard } = useClipEdits(project, applyProject);
   const fonts = useCaptionFonts();
@@ -64,6 +76,7 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
   useEffect(() => {
     if (!ready) return;
     const p = new Player(media.source(project.id));
+    // oxlint-disable-next-line react/set-state-in-effect -- the Player owns a <video> and rAF loop, so it is created and torn down by the effect
     setPlayer(p);
     return () => {
       p.destroy();
@@ -149,7 +162,12 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
 
   return (
     <div className="flex h-full flex-col">
-      <ProjectHeader project={project} online={online} applyProject={applyProject} onOpenWebcam={() => setWebcamOpen(true)} />
+      <ProjectHeader
+        project={project}
+        online={online}
+        applyProject={applyProject}
+        onOpenWebcam={() => setWebcamOpen(true)}
+      />
 
       {!ready || !player ? (
         <div className="grid flex-1 place-items-center p-8">
@@ -158,7 +176,8 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
               "The download failed. Use Retry above."
             ) : (
               <span className="flex items-center gap-2">
-                <Loader2 className="size-4 animate-spin" aria-hidden /> Waiting for the source video. The editor opens once the download is done.
+                <Loader2 className="size-4 animate-spin" aria-hidden /> Waiting for the source video. The editor opens
+                once the download is done.
               </span>
             )}
           </Empty>
@@ -181,7 +200,9 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
                   onClick={() => setTab(key)}
                   className={cn(
                     "flex-1 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-                    tab === key ? "border-indigo-400 text-white" : "border-transparent text-zinc-400 hover:text-zinc-200",
+                    tab === key
+                      ? "border-indigo-400 text-white"
+                      : "border-transparent text-zinc-400 hover:text-zinc-200",
                   )}
                 >
                   {label}
@@ -216,7 +237,10 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
 
           <main className="min-h-0 overflow-y-auto p-4">
             {active ? (
-              <div className="mx-auto flex w-full flex-col gap-4" style={{ maxWidth: "calc(min(62vh, 620px) * 9 / 16 + 520px)" }}>
+              <div
+                className="mx-auto flex w-full flex-col gap-4"
+                style={{ maxWidth: "calc(min(62vh, 620px) * 9 / 16 + 520px)" }}
+              >
                 <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-5">
                   <div className="sticky top-0 flex-none">
                     <Preview
@@ -253,14 +277,26 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
                     />
                   </div>
                 </div>
-                {fonts.error && <p className="rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-200">{fonts.error}</p>}
-                <Transcript clip={active} words={words} loading={project.stages.transcribe.status !== "done"} error={transcriptError} player={player} />
+                {fonts.error && (
+                  <p className="rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-200">
+                    {fonts.error}
+                  </p>
+                )}
+                <Transcript
+                  clip={active}
+                  words={words}
+                  loading={project.stages.transcribe.status !== "done"}
+                  error={transcriptError}
+                  player={player}
+                />
               </div>
             ) : (
               <Empty>
                 <span className="flex flex-col items-center gap-2">
                   <Film className="size-8 text-zinc-600" aria-hidden />
-                  {clips.length === 0 && project.stages.highlights.status !== "done" ? "The preview opens once highlights are found, or add a clip by hand." : "Select or add a clip to preview it."}
+                  {clips.length === 0 && project.stages.highlights.status !== "done"
+                    ? "The preview opens once highlights are found, or add a clip by hand."
+                    : "Select or add a clip to preview it."}
                 </span>
               </Empty>
             )}
@@ -270,20 +306,38 @@ function ProjectView({ project, online, applyProject }: { project: Project; onli
 
       <RenderBar project={project} clips={clips} flushAll={flushAll} applyProject={applyProject} />
       {webcamOpen && source && (
-        <WebcamEditor project={project} initialTime={active?.start ?? source.duration * 0.1} onClose={() => setWebcamOpen(false)} applyProject={applyProject} />
+        <WebcamEditor
+          project={project}
+          initialTime={active?.start ?? source.duration * 0.1}
+          onClose={() => setWebcamOpen(false)}
+          applyProject={applyProject}
+        />
       )}
     </div>
   );
 }
 
-function RenderedGallery({ project, clips, onPlay }: { project: Project; clips: Clip[]; onPlay: (clip: Clip) => void }) {
+function RenderedGallery({
+  project,
+  clips,
+  onPlay,
+}: {
+  project: Project;
+  clips: Clip[];
+  onPlay: (clip: Clip) => void;
+}) {
   if (clips.length === 0) return <Empty>Finished shorts appear here.</Empty>;
   return (
     <ul className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2" aria-label="Rendered shorts">
       {clips.map((clip) => (
         <li key={clip.id} className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5">
           {clip.thumbnail.file && (
-            <a href={media.clip(project.id, clip.thumbnail.file, true)} download title="Download the thumbnail" className="block">
+            <a
+              href={media.clip(project.id, clip.thumbnail.file, true)}
+              download
+              title="Download the thumbnail"
+              className="block"
+            >
               <img
                 src={media.thumbnailFile(project.id, clip.thumbnail.file, clip.thumbnail.generatedAt)}
                 alt={`Thumbnail of ${clip.title}`}

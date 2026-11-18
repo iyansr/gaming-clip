@@ -2,6 +2,7 @@
   "name": "gaming-clip",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "setup": "bun scripts/setup.ts",
@@ -9,6 +10,11 @@
     "start": "bun src/server/index.ts",
     "clip": "bun src/cli.ts",
     "typecheck": "tsc --noEmit",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun test",
     "test": "bun test"
   },
   "dependencies": {
@@ -27,6 +33,9 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "bun-plugin-tailwind": "^0.1.2",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
+    "oxlint-tsgolint": "^7.0.2007",
     "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2"
   }

@@ -1,8 +1,10 @@
 import { mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+
 import { createCanvas, ImageData, loadImage, type Image } from "@napi-rs/canvas";
+
 import { computeLayout } from "../shared/layout";
-import { drawThumbnail, getThumbnailStyle, type ThumbnailContext } from "../shared/thumbnail";
+import { drawThumbnail, getThumbnailStyle } from "../shared/thumbnail";
 import { OUTPUT_SIZE, type ClipSettings, type LoudnessEnvelope, type Rect } from "../shared/types";
 import { grabFrame } from "./frames";
 import { registerFonts } from "./render";
@@ -61,7 +63,11 @@ function probeTimes(start: number, end: number, loudness: LoudnessEnvelope | nul
   const picks: { time: number; loud: number }[] = [];
   if (loudness && loudness.step > 0) {
     const steps: { time: number; db: number }[] = [];
-    for (let i = Math.max(0, Math.floor(from / loudness.step)); i < loudness.rms.length && i * loudness.step < to; i++) {
+    for (
+      let i = Math.max(0, Math.floor(from / loudness.step));
+      i < loudness.rms.length && i * loudness.step < to;
+      i++
+    ) {
       steps.push({ time: i * loudness.step, db: loudness.rms[i]! });
     }
     const peaks: { time: number; db: number }[] = [];
@@ -73,7 +79,8 @@ function probeTimes(start: number, end: number, loudness: LoudnessEnvelope | nul
       for (const delay of REACTION_DELAYS) picks.push({ time: peak.time + delay, loud: 1 - rank / LOUD_PEAKS });
     });
   }
-  for (let i = 0; i < SPREAD_SAMPLES; i++) picks.push({ time: from + ((to - from) * (i + 0.5)) / SPREAD_SAMPLES, loud: 0 });
+  for (let i = 0; i < SPREAD_SAMPLES; i++)
+    picks.push({ time: from + ((to - from) * (i + 0.5)) / SPREAD_SAMPLES, loud: 0 });
 
   const kept: { time: number; loud: number }[] = [];
   for (const pick of picks) {
@@ -105,7 +112,11 @@ function regionStats(gray: Uint8Array, width: number, region: Rect): { sharpness
 }
 
 /** Good cover frames inside [start, end], best first, at least 0.7 s apart. */
-export async function suggestThumbnailTimes(input: ThumbnailSearch, count = 6, signal?: AbortSignal): Promise<ThumbnailCandidate[]> {
+export async function suggestThumbnailTimes(
+  input: ThumbnailSearch,
+  count = 6,
+  signal?: AbortSignal,
+): Promise<ThumbnailCandidate[]> {
   const { source, webcam } = input;
   const width = PROBE_WIDTH;
   const height = Math.max(2, Math.round((PROBE_WIDTH * source.height) / source.width / 2) * 2);
@@ -172,12 +183,13 @@ export async function renderThumbnail(job: ThumbnailJob, signal?: AbortSignal): 
   const layout = computeLayout(job.source, job.webcam, job.settings, OUTPUT_SIZE);
   let backgroundImage: { image: Image; size: { width: number; height: number } } | undefined;
   if (layout.image) {
-    if (!job.assetsDir) throw new Error("The layout has a background image but the thumbnail job has no assets directory");
+    if (!job.assetsDir)
+      throw new Error("The layout has a background image but the thumbnail job has no assets directory");
     const image = await loadImage(join(job.assetsDir, basename(layout.image)));
     backgroundImage = { image, size: { width: image.width, height: image.height } };
   }
   drawThumbnail(
-    canvas.getContext("2d") as unknown as ThumbnailContext,
+    canvas.getContext("2d"),
     frame,
     job.source,
     layout,
@@ -187,7 +199,7 @@ export async function renderThumbnail(job: ThumbnailJob, signal?: AbortSignal): 
       textY: job.textY,
       sourceSize: job.source,
       backgroundImage,
-      createCanvas: (width, height) => createCanvas(width, height).getContext("2d") as unknown as ThumbnailContext,
+      createCanvas: (width, height) => createCanvas(width, height).getContext("2d"),
     },
     OUTPUT_SIZE,
   );

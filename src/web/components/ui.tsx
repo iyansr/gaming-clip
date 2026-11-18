@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+
 import { cn } from "../lib/format";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
@@ -47,7 +48,17 @@ export function ProgressBar({ value, className, label }: { value: number; classN
   );
 }
 
-export function Panel({ title, actions, children, className }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
+export function Panel({
+  title,
+  actions,
+  children,
+  className,
+}: {
+  title?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
     <section className={cn("rounded-lg border border-zinc-800 bg-zinc-900", className)}>
       {title && (
@@ -65,7 +76,15 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="flex items-center justify-center px-4 py-8 text-center text-sm text-zinc-400">{children}</div>;
 }
 
-export function Badge({ children, tone = "neutral", title }: { children: ReactNode; tone?: "neutral" | "good" | "warn" | "bad" | "info"; title?: string }) {
+export function Badge({
+  children,
+  tone = "neutral",
+  title,
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "good" | "warn" | "bad" | "info";
+  title?: string;
+}) {
   const tones = {
     neutral: "bg-zinc-800 text-zinc-300",
     good: "bg-emerald-950 text-emerald-300",
@@ -74,7 +93,13 @@ export function Badge({ children, tone = "neutral", title }: { children: ReactNo
     info: "bg-indigo-950 text-indigo-300",
   };
   return (
-    <span title={title} className={cn("inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] leading-4 font-medium", tones[tone])}>
+    <span
+      title={title}
+      className={cn(
+        "inline-flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] leading-4 font-medium",
+        tones[tone],
+      )}
+    >
       {children}
     </span>
   );

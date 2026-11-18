@@ -63,7 +63,12 @@ function roundedRect(ctx: ComposeContext, x: number, y: number, w: number, h: nu
  * fading to transparent over `feather` px at the edges. `radius` is clamped to half the shorter side,
  * `feather` too. Expects a transparent canvas and an untransformed or translate-only context.
  */
-export function drawCamMask(ctx: ComposeContext, w: number, h: number, style: { feather: number; radius: number }): void {
+export function drawCamMask(
+  ctx: ComposeContext,
+  w: number,
+  h: number,
+  style: { feather: number; radius: number },
+): void {
   const shape = camShape(w, h, style.feather, style.radius);
   const { soft } = shape;
   ctx.save();

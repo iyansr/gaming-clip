@@ -129,7 +129,9 @@ export const THUMBNAIL_STYLES: ThumbnailStyle[] = [
 export function getThumbnailStyle(id: string): ThumbnailStyle {
   const style = THUMBNAIL_STYLES.find((candidate) => candidate.id === id);
   if (!style) {
-    throw new Error(`Unknown thumbnail style "${id}" (known: ${THUMBNAIL_STYLES.map((candidate) => candidate.id).join(", ")})`);
+    throw new Error(
+      `Unknown thumbnail style "${id}" (known: ${THUMBNAIL_STYLES.map((candidate) => candidate.id).join(", ")})`,
+    );
   }
   return style;
 }
@@ -142,9 +144,24 @@ export interface ThumbnailContext extends CaptionContext, ComposeContext {
   imageSmoothingQuality: string;
   globalCompositeOperation: string;
   fill(fillRule?: "nonzero" | "evenodd"): void;
-  drawImage(image: never, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number): void;
+  drawImage(
+    image: never,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    dx: number,
+    dy: number,
+    dw: number,
+    dh: number,
+  ): void;
   fillRect(x: number, y: number, w: number, h: number): void;
-  createLinearGradient(x0: number, y0: number, x1: number, y1: number): { addColorStop(offset: number, color: string): void };
+  createLinearGradient(
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+  ): { addColorStop(offset: number, color: string): void };
 }
 
 /** Extra inputs of `drawThumbnail` beyond the headline. */
@@ -229,7 +246,13 @@ const ELLIPSIS = "…";
 const SHRINK_STEP = 0.94;
 
 /** Largest font size (down to the style's floor) at which the headline fits; past the floor the text is cut with an ellipsis. */
-function layoutHeadline(ctx: ThumbnailContext, words: HeadlineWord[], style: ThumbnailStyle, scale: number, maxWidth: number): HeadlineLayout {
+function layoutHeadline(
+  ctx: ThumbnailContext,
+  words: HeadlineWord[],
+  style: ThumbnailStyle,
+  scale: number,
+  maxWidth: number,
+): HeadlineLayout {
   const measureAt = (size: number) => {
     ctx.font = `${style.fontWeight} ${size}px "${style.fontFamily}"`;
     const measured: MeasuredWord[] = words.map((word) => {
@@ -258,7 +281,10 @@ function layoutHeadline(ctx: ThumbnailContext, words: HeadlineWord[], style: Thu
         const byWord = new Map(measured.map((word, i) => [word, again[i]!]));
         lines = lines.map((line) => {
           const remeasured = line.words.map((word) => byWord.get(word)!);
-          return { words: remeasured, width: remeasured.reduce((sum, word) => sum + word.width, 0) + space * (remeasured.length - 1) };
+          return {
+            words: remeasured,
+            width: remeasured.reduce((sum, word) => sum + word.width, 0) + space * (remeasured.length - 1),
+          };
         });
       } else {
         // Balance: the narrowest wrap width that keeps the same number of lines.
@@ -299,9 +325,15 @@ function drawLayer(
       ctx.drawImage(source, src.x * sx, src.y * sy, src.w * sx, src.h * sy, dst.x, dst.y, dst.w, dst.h);
       return;
     }
-    const scaled = { feather: style.feather * k, radius: style.radius * k, border: style.border * k, borderColor: style.borderColor };
+    const scaled = {
+      feather: style.feather * k,
+      radius: style.radius * k,
+      border: style.border * k,
+      borderColor: style.borderColor,
+    };
     if (style.feather > 0 || style.radius > 0) {
-      if (!createCanvas) throw new Error("drawThumbnail needs opts.createCanvas to draw a webcam with a soft edge or rounded corners");
+      if (!createCanvas)
+        throw new Error("drawThumbnail needs opts.createCanvas to draw a webcam with a soft edge or rounded corners");
       // Mask first, then the picture only where the mask is opaque (source-in), then the result onto the cover.
       const w = Math.max(1, Math.round(dst.w));
       const h = Math.max(1, Math.round(dst.h));
@@ -403,7 +435,15 @@ export function drawThumbnail(
   // The layout targets the full-size output; `frame` may be a scaled preview of it.
   const k = frame.width / OUTPUT_SIZE.width;
   for (const layer of layout.layers) {
-    drawLayer(ctx, image, layer, k, imageSize.width / opts.sourceSize.width, imageSize.height / opts.sourceSize.height, opts.createCanvas);
+    drawLayer(
+      ctx,
+      image,
+      layer,
+      k,
+      imageSize.width / opts.sourceSize.width,
+      imageSize.height / opts.sourceSize.height,
+      opts.createCanvas,
+    );
   }
   ctx.restore();
 
@@ -420,7 +460,10 @@ export function drawThumbnail(
   const lineH = size * style.lineHeight;
   const blockH = lineH * lines.length;
   const margin = frame.height * EDGE_MARGIN;
-  const centerY = Math.min(Math.max(opts.textY * frame.height, blockH / 2 + margin), frame.height - blockH / 2 - margin);
+  const centerY = Math.min(
+    Math.max(opts.textY * frame.height, blockH / 2 + margin),
+    frame.height - blockH / 2 - margin,
+  );
 
   if (style.scrim > 0) {
     const reach = blockH / 2 + size * 1.6;
@@ -460,7 +503,14 @@ export function drawThumbnail(
     ctx.fillStyle = fill;
     lines.forEach((line, row) => {
       const top = -blockH / 2 + row * lineH + padY * scale;
-      roundedRect(ctx, -line.width / 2 - padX * scale, top, line.width + 2 * padX * scale, lineH - 2 * padY * scale, radius * scale);
+      roundedRect(
+        ctx,
+        -line.width / 2 - padX * scale,
+        top,
+        line.width + 2 * padX * scale,
+        lineH - 2 * padY * scale,
+        radius * scale,
+      );
       ctx.fill();
     });
   }

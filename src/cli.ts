@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { BIN, PORT, projectPaths } from "./core/config";
+
+import { BIN, PLATFORM, PORT, projectPaths, VERSION } from "./core/config";
 import { checkDeps } from "./core/doctor";
 import { run } from "./core/exec";
 import { grabJpeg } from "./core/frames";
@@ -26,6 +27,7 @@ import {
   type ClipFields,
   type PipelineOptions,
 } from "./core/pipeline";
+import { runSetup } from "./core/setup";
 import {
   createProject,
   deleteProject,
@@ -36,12 +38,25 @@ import {
   updateProject,
   ValidationError,
 } from "./core/store";
-import { STAGE_ORDER, type Clip, type LoudnessEnvelope, type Project, type StageId, type Transcript } from "./shared/types";
+import { DONATE_URL, SPONSOR_URL } from "./shared/project";
 import { THUMBNAIL_STYLES } from "./shared/thumbnail";
+import {
+  STAGE_ORDER,
+  type Clip,
+  type LoudnessEnvelope,
+  type Project,
+  type StageId,
+  type Transcript,
+} from "./shared/types";
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 const USAGE = `Usage: bun run clip <command> [options]
 
   clip doctor                                  dependency table; exit 1 if anything is missing
+  clip setup                                   download missing tools (ffmpeg, yt-dlp, whisper-cli) and models
   clip serve [--port N]                        start the web UI server
   clip new <url|file>... [--lang auto] [--clips auto|N] [--min 20] [--max 60] [--no-highlights]
                                                create project(s) and run the pipeline to completion
@@ -76,6 +91,7 @@ const USAGE = `Usage: bun run clip <command> [options]
                                                prints the files. --no-text = no headline, --title-text = use the
                                                clip title, auto = pick the best frame. Styles: ${THUMBNAIL_STYLES.map((style) => style.id).join(", ")}
   clip rm <id>                                 delete the project and its files
+  clip version                                 version, platform and where to support the project
 
 Times: seconds (83.5) or MM:SS(.s) / H:MM:SS(.s). --json prints machine-readable JSON on stdout (progress goes to stderr).
 Exit codes: 0 ok, 1 failure, 2 usage error.
@@ -127,7 +143,8 @@ function parseArgs(args: string[], spec: CommandSpec): { positionals: string[]; 
       continue;
     }
     const value = eq === -1 ? args[++i] : arg.slice(eq + 1);
-    if (value === undefined || (eq === -1 && value.startsWith("--"))) throw new UsageError(`Flag --${name} needs a value`);
+    if (value === undefined || (eq === -1 && value.startsWith("--")))
+      throw new UsageError(`Flag --${name} needs a value`);
     flags[name] = value;
   }
   if (positionals.length < spec.args[0]) throw new UsageError(`Missing argument (expected at least ${spec.args[0]})`);
@@ -162,7 +179,9 @@ const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 
 function table(rows: string[][]): string {
   const widths = rows[0]!.map((_, col) => Math.max(...rows.map((row) => (row[col] ?? "").length)));
-  return rows.map((row) => row.map((cell, col) => (col === row.length - 1 ? cell : cell.padEnd(widths[col]!))).join("  ")).join("\n");
+  return rows
+    .map((row) => row.map((cell, col) => (col === row.length - 1 ? cell : cell.padEnd(widths[col]!))).join("  "))
+    .join("\n");
 }
 
 const clock = (clip: { start: number; end: number }) => `${formatClock(clip.start)}-${formatClock(clip.end)}`;
@@ -171,7 +190,7 @@ const clock = (clip: { start: number; end: number }) => `${formatClock(clip.star
 // Progress on stderr
 // ---------------------------------------------------------------------------------------------
 
-const isTty = process.stderr.isTTY === true;
+const isTty = process.stderr.isTTY;
 
 /** TTY: one updating line. Otherwise a line whenever the label or the 10% bucket changes. */
 function createStatusLine() {
@@ -231,7 +250,8 @@ function trackRender(projectId: string, clipId: string): () => void {
   const status = createStatusLine();
   const unsubscribe = subscribe((p) => {
     const clip = p.clips.find((candidate) => candidate.id === clipId);
-    if (p.id === projectId && clip?.render.status === "rendering") status.update(`  render ${clipId}`, clip.render.progress);
+    if (p.id === projectId && clip?.render.status === "rendering")
+      status.update(`  render ${clipId}`, clip.render.progress);
   });
   return () => {
     unsubscribe();
@@ -303,7 +323,7 @@ function showProject(project: Project): void {
       String(Math.round(clip.score)),
       clip.selected ? "*" : "-",
       clip.source,
-      `${clip.settings.layout}`,
+      clip.settings.layout,
       clip.settings.subtitles ? clip.settings.captionStyle : "off",
       clip.thumbnail.file ?? "-",
       describeRender(clip, project.id),
@@ -319,9 +339,13 @@ function showProject(project: Project): void {
 }
 
 function parseClipList(text: string | undefined, project: Project, fallback: "selected" | "none"): string[] {
-  if (text === undefined) return fallback === "selected" ? project.clips.filter((clip) => clip.selected).map((clip) => clip.id) : [];
+  if (text === undefined)
+    return fallback === "selected" ? project.clips.filter((clip) => clip.selected).map((clip) => clip.id) : [];
   if (text === "all") return project.clips.map((clip) => clip.id);
-  return text.split(",").map((id) => id.trim()).filter(Boolean);
+  return text
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
 }
 
 async function readJsonFile(path: string): Promise<unknown> {
@@ -347,15 +371,17 @@ async function readPicks(path: string): Promise<ClipFields[]> {
       throw new ValidationError(`pick #${index + 1}: ${key} must be a number or a time string`);
     };
     for (const key of ["title", "reason"] as const) {
-      if (pick[key] !== undefined && typeof pick[key] !== "string") throw new ValidationError(`pick #${index + 1}: ${key} must be a string`);
+      if (pick[key] !== undefined && typeof pick[key] !== "string")
+        throw new ValidationError(`pick #${index + 1}: ${key} must be a string`);
     }
-    if (pick.score !== undefined && typeof pick.score !== "number") throw new ValidationError(`pick #${index + 1}: score must be a number`);
+    if (pick.score !== undefined && typeof pick.score !== "number")
+      throw new ValidationError(`pick #${index + 1}: score must be a number`);
     return {
       start: time("start"),
       end: time("end"),
       title: (pick.title as string | undefined) ?? "",
       reason: (pick.reason as string | undefined) ?? "",
-      score: (pick.score as number | undefined) ?? 50,
+      score: pick.score ?? 50,
     };
   });
 }
@@ -368,9 +394,25 @@ const COMMANDS: Record<string, CommandSpec> = {
       const deps = await checkDeps();
       if (json) print(deps);
       else {
-        console.log(table(deps.map((dep) => [dep.ok ? "OK" : "MISSING", dep.name, dep.detail + (dep.fix ? `  (fix: ${dep.fix})` : "")])));
+        console.log(
+          table(
+            deps.map((dep) => [
+              dep.ok ? "OK" : "MISSING",
+              dep.name,
+              dep.detail + (dep.fix ? `  (fix: ${dep.fix})` : ""),
+            ]),
+          ),
+        );
       }
       return deps.every((dep) => dep.ok) ? 0 : 1;
+    },
+  },
+
+  setup: {
+    flags: {},
+    args: [0, 0],
+    async run() {
+      return runSetup();
     },
   },
 
@@ -407,7 +449,7 @@ const COMMANDS: Record<string, CommandSpec> = {
         } catch (error) {
           if (abort.signal.aborted) throw error;
           failures++;
-          console.error(`Project ${project.id} failed: ${error instanceof Error ? error.message : error}`);
+          console.error(`Project ${project.id} failed: ${errorMessage(error)}`);
           project = await getProject(project.id);
         }
         results.push(project);
@@ -425,7 +467,8 @@ const COMMANDS: Record<string, CommandSpec> = {
     args: [1, 1],
     async run([id], flags) {
       const from = flags.from as StageId | undefined;
-      if (from !== undefined && !STAGE_ORDER.includes(from)) throw new UsageError(`--from must be one of ${STAGE_ORDER.join(", ")}`);
+      if (from !== undefined && !STAGE_ORDER.includes(from))
+        throw new UsageError(`--from must be one of ${STAGE_ORDER.join(", ")}`);
       let project = await getProject(id!);
       const raw: Record<string, unknown> = {};
       if (typeof flags.clips === "string") raw.clipCount = parseClipCount(flags.clips);
@@ -495,7 +538,9 @@ const COMMANDS: Record<string, CommandSpec> = {
       if (json) {
         print({
           ...transcript,
-          segments: transcript.segments.filter((segment) => !ranged || (segment.end > range.from && segment.start < range.to)),
+          segments: transcript.segments.filter(
+            (segment) => !ranged || (segment.end > range.from && segment.start < range.to),
+          ),
         });
         return;
       }
@@ -513,18 +558,28 @@ const COMMANDS: Record<string, CommandSpec> = {
       const t = asUsage(() => parseTime(time!));
       const project = await getProject(id!);
       if (!project.source) throw new Error("The source video is not downloaded yet");
-      if (t > project.source.duration) throw new ValidationError(`T ${t}s is beyond the source duration ${project.source.duration.toFixed(1)}s`);
+      if (t > project.source.duration)
+        throw new ValidationError(`T ${t}s is beyond the source duration ${project.source.duration.toFixed(1)}s`);
       const at = clampFrameTime(t, project.source.duration);
       const { source } = projectPaths(project.id);
       if (flags.crop === "webcam") {
         const rect = project.webcam.rect;
         if (!rect) throw new Error("This project has no webcam rect (see: clip webcam <id> --rect x,y,w,h)");
         await run(BIN.ffmpeg, [
-          "-v", "error", "-y", "-nostdin",
-          "-ss", at.toFixed(3), "-i", source,
-          "-frames:v", "1",
-          "-vf", `crop=${rect.w}:${rect.h}:${rect.x}:${rect.y}`,
-          "-q:v", "3",
+          "-v",
+          "error",
+          "-y",
+          "-nostdin",
+          "-ss",
+          at.toFixed(3),
+          "-i",
+          source,
+          "-frames:v",
+          "1",
+          "-vf",
+          `crop=${rect.w}:${rect.h}:${rect.x}:${rect.y}`,
+          "-q:v",
+          "3",
           out!,
         ]);
       } else {
@@ -544,7 +599,10 @@ const COMMANDS: Record<string, CommandSpec> = {
       const project = await updateProject(id!, (p) => {
         removed = replaceGeneratedClips(p, picks, "agent");
       });
-      await removeOutputs(project.id, removed.flatMap((clip) => [clip.render.file, clip.thumbnail.file]));
+      await removeOutputs(
+        project.id,
+        removed.flatMap((clip) => [clip.render.file, clip.thumbnail.file]),
+      );
       if (json) return print(project);
       console.log(`Set ${picks.length} clip(s) (replaced ${removed.length}):`);
       for (const clip of project.clips.filter((candidate) => candidate.source === "agent")) {
@@ -581,7 +639,13 @@ const COMMANDS: Record<string, CommandSpec> = {
     flags: {},
     args: [2, 2],
     async run([id, which]) {
-      const target = which === "all" || which === "none" ? which : which!.split(",").map((clipId) => clipId.trim()).filter(Boolean);
+      const target =
+        which === "all" || which === "none"
+          ? which
+          : which!
+              .split(",")
+              .map((clipId) => clipId.trim())
+              .filter(Boolean);
       if (Array.isArray(target) && target.length === 0) throw new UsageError("Give clip ids, all or none");
       const project = await selectClips(id!, target);
       if (json) return print(project);
@@ -610,12 +674,22 @@ const COMMANDS: Record<string, CommandSpec> = {
       }
       if (json) return print(project.webcam);
       const { webcam } = project;
-      console.log(`webcam: ${webcam.source}${webcam.rect ? ` rect ${webcam.rect.x},${webcam.rect.y},${webcam.rect.w},${webcam.rect.h}` : " (no rect)"} confidence ${webcam.confidence}`);
+      console.log(
+        `webcam: ${webcam.source}${webcam.rect ? ` rect ${webcam.rect.x},${webcam.rect.y},${webcam.rect.w},${webcam.rect.h}` : " (no rect)"} confidence ${webcam.confidence}`,
+      );
     },
   },
 
   settings: {
-    flags: { clips: "value", layout: "value", "custom-json": "value", subtitles: "value", style: "value", "caption-y": "value", "focus-x": "value" },
+    flags: {
+      clips: "value",
+      layout: "value",
+      "custom-json": "value",
+      subtitles: "value",
+      style: "value",
+      "caption-y": "value",
+      "focus-x": "value",
+    },
     args: [1, 1],
     async run([id], flags) {
       const raw: Record<string, unknown> = {};
@@ -635,14 +709,26 @@ const COMMANDS: Record<string, CommandSpec> = {
       const patch = asUsage(() => parseSettingsPatch(raw));
       let project = await getProject(id!);
       if (Object.keys(patch).length > 0) {
-        const target = typeof flags.clips === "string" ? (flags.clips === "all" ? "all" : parseClipList(flags.clips, project, "none")) : null;
+        const target =
+          typeof flags.clips === "string"
+            ? flags.clips === "all"
+              ? "all"
+              : parseClipList(flags.clips, project, "none")
+            : null;
         project = await updateSettings(project.id, patch, target);
       } else if (flags.clips !== undefined) {
         throw new UsageError("--clips needs at least one setting to change");
       }
-      if (json) return print({ defaults: project.defaults, clips: project.clips.map((clip) => ({ id: clip.id, settings: clip.settings })) });
+      if (json)
+        return print({
+          defaults: project.defaults,
+          clips: project.clips.map((clip) => ({ id: clip.id, settings: clip.settings })),
+        });
       const line = (label: string, s: Project["defaults"]) => {
-        const layout = s.layout === "custom" && s.custom ? `custom (${s.custom.background.kind} background${s.custom.game ? ", game" : ""}${s.custom.cam ? ", cam" : ""})` : s.layout;
+        const layout =
+          s.layout === "custom" && s.custom
+            ? `custom (${s.custom.background.kind} background${s.custom.game ? ", game" : ""}${s.custom.cam ? ", cam" : ""})`
+            : s.layout;
         return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}`;
       };
       console.log(line("defaults:", project.defaults));
@@ -671,7 +757,7 @@ const COMMANDS: Record<string, CommandSpec> = {
         } catch (error) {
           if (abort.signal.aborted) throw error;
           failures++;
-          console.error(`Clip ${clipId} failed: ${error instanceof Error ? error.message : error}`);
+          console.error(`Clip ${clipId} failed: ${errorMessage(error)}`);
         } finally {
           stop();
         }
@@ -708,7 +794,8 @@ const COMMANDS: Record<string, CommandSpec> = {
       const patch = asUsage(() => parseThumbnailPatch(raw));
       let project = await getProject(id!);
       const clipIds = parseClipList(typeof flags.clips === "string" ? flags.clips : undefined, project, "selected");
-      if (clipIds.length === 0) throw new Error("No clips to make covers for: select some (clip clips select) or pass --clips");
+      if (clipIds.length === 0)
+        throw new Error("No clips to make covers for: select some (clip clips select) or pass --clips");
       for (const clipId of clipIds) {
         if (!project.clips.some((clip) => clip.id === clipId)) throw new NotFoundError(`Clip not found: ${clipId}`);
       }
@@ -718,7 +805,8 @@ const COMMANDS: Record<string, CommandSpec> = {
         if (Object.keys(patch).length > 0) project = await patchClip(project.id, clipId, { thumbnail: patch });
         project = await generateThumbnail(project.id, clipId, abort.signal);
         const clip = project.clips.find((candidate) => candidate.id === clipId);
-        if (!clip?.thumbnail.file) throw new Error(`The cover of clip ${clipId} was not generated: the clip changed while it was made`);
+        if (!clip?.thumbnail.file)
+          throw new Error(`The cover of clip ${clipId} was not generated: the clip changed while it was made`);
         outputs.push({ clipId, file: join(clipsDir, clip.thumbnail.file), time: clip.thumbnail.usedTime ?? 0 });
       }
       if (json) print(outputs);
@@ -736,6 +824,17 @@ const COMMANDS: Record<string, CommandSpec> = {
       else console.log(`Deleted project ${id}`);
     },
   },
+
+  version: {
+    flags: {},
+    args: [0, 0],
+    async run() {
+      if (json) return print({ version: VERSION, platform: PLATFORM, sponsor: SPONSOR_URL, donate: DONATE_URL });
+      console.log(`gaming-clip ${VERSION}`);
+      console.log(`platform:  ${PLATFORM ?? `${process.platform}-${process.arch} (no tool downloads)`}`);
+      console.log(`Support development: ${SPONSOR_URL} (GitHub Sponsors) or ${DONATE_URL} (tip in IDR)`);
+    },
+  },
 };
 
 async function main(argv: string[]): Promise<number> {
@@ -748,8 +847,14 @@ async function main(argv: string[]): Promise<number> {
   const isGroup = first === "clips";
   const name = isGroup ? `clips ${second ?? ""}` : first;
   const spec = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
-  if (!spec) throw new UsageError(isGroup ? `Unknown clips subcommand "${second ?? ""}" (set, add, rm, select)` : `Unknown command "${first}"`);
-  const { positionals, flags } = parseArgs(isGroup ? rest : [second, ...rest].filter((arg): arg is string => arg !== undefined), spec);
+  if (!spec)
+    throw new UsageError(
+      isGroup ? `Unknown clips subcommand "${second ?? ""}" (set, add, rm, select)` : `Unknown command "${first}"`,
+    );
+  const { positionals, flags } = parseArgs(
+    isGroup ? rest : [second, ...rest].filter((arg): arg is string => arg !== undefined),
+    spec,
+  );
   json = flags.json === true;
   return (await spec.run(positionals, flags)) ?? 0;
 }
@@ -771,7 +876,7 @@ try {
     console.error("Interrupted");
     process.exitCode = 130;
   } else {
-    console.error(`error: ${error instanceof Error ? error.message : error}`);
+    console.error(`error: ${errorMessage(error)}`);
     process.exitCode = 1;
   }
 }

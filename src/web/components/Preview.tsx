@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Pause, Play, Volume2, VolumeX } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+
 import { buildCues, drawCaptions, type CaptionCue } from "../../shared/captions";
 import { computeLayout } from "../../shared/layout";
 import { OUTPUT_SIZE, type Clip, type CustomLayout, type Project, type Word } from "../../shared/types";
@@ -44,7 +45,19 @@ interface DrawState {
   image: HTMLImageElement | null;
 }
 
-export function Preview({ project, clip, words, player, fontsReady, mode, onModeChange, thumbnailTime, customUi, onCustomUiChange, onCustomChange }: Props) {
+export function Preview({
+  project,
+  clip,
+  words,
+  player,
+  fontsReady,
+  mode,
+  onModeChange,
+  thumbnailTime,
+  customUi,
+  onCustomUiChange,
+  onCustomChange,
+}: Props) {
   const toast = useToast();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const painter = useRef<LayoutPainter | null>(null);
@@ -55,11 +68,17 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
     [words, clip.start, clip.end, clip.settings.captionStyle],
   );
   const sourceSize = project.source ? { width: project.source.width, height: project.source.height } : null;
-  const custom = clip.settings.layout === "custom" && sourceSize ? resolveCustom(sourceSize, project.webcam.rect, clip.settings.custom) : null;
+  const custom =
+    clip.settings.layout === "custom" && sourceSize
+      ? resolveCustom(sourceSize, project.webcam.rect, clip.settings.custom)
+      : null;
   const imageFile = custom?.background.kind === "image" ? custom.background.file : null;
   const image = useAssetImage(project.id, imageFile);
   const state = useRef<DrawState>({ project, clip, cues, fontsReady, image });
-  state.current = { project, clip, cues, fontsReady, image };
+  // Refreshed at commit time, before the redraw effect below and before the next animation frame.
+  useLayoutEffect(() => {
+    state.current = { project, clip, cues, fontsReady, image };
+  });
 
   const rendered = clip.render.status === "done" && clip.render.file ? clip.render.file : null;
   const shown: PreviewMode = mode === "rendered" && rendered === null ? "preview" : mode;
@@ -74,7 +93,7 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
     if (!ctx) throw new Error("2D canvas is not available in this browser");
     const layoutPainter = (painter.current ??= new LayoutPainter());
 
-    player.draw = () => {
+    player.setDraw(() => {
       const { project: p, clip: c, cues: cs, fontsReady: fonts, image: background } = state.current;
       const video = player.video;
       if (!p.source || video.readyState < 2) {
@@ -83,7 +102,12 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
         return;
       }
 
-      const layout = computeLayout({ width: p.source.width, height: p.source.height }, p.webcam.rect, c.settings, OUTPUT_SIZE);
+      const layout = computeLayout(
+        { width: p.source.width, height: p.source.height },
+        p.webcam.rect,
+        c.settings,
+        OUTPUT_SIZE,
+      );
       layoutPainter.paint(ctx, video, layout, background, OUTPUT_SIZE);
       if (c.settings.subtitles && fonts) {
         drawCaptions(ctx, cs, video.currentTime - c.start, c.settings.captionStyle, {
@@ -92,10 +116,10 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
           centerY: c.settings.captionY * OUTPUT_SIZE.height,
         });
       }
-    };
+    });
     player.invalidate();
     return () => {
-      player.draw = null;
+      player.setDraw(null);
     };
   }, [player, live]);
 
@@ -155,6 +179,7 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
         className="relative aspect-[9/16] w-full overflow-hidden rounded-lg border border-zinc-800 bg-black"
       >
         {showRendered && rendered ? (
+          // oxlint-disable-next-line jsx-a11y/media-has-caption -- captions are burned into the rendered video's picture
           <video
             key={`${rendered}-${clip.render.renderedAt ?? ""}`}
             src={media.clip(project.id, rendered)}
@@ -175,8 +200,12 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
               className="size-full cursor-pointer"
               aria-label="Vertical preview of the short"
             />
-            {error && <div className="absolute inset-x-2 top-2 rounded bg-red-950/90 p-2 text-xs text-red-100">{error}</div>}
-            {showBoxes && custom && <CustomOverlay custom={custom} ui={customUi} onUiChange={onCustomUiChange} onChange={onCustomChange} />}
+            {error && (
+              <div className="absolute inset-x-2 top-2 rounded bg-red-950/90 p-2 text-xs text-red-100">{error}</div>
+            )}
+            {showBoxes && custom && (
+              <CustomOverlay custom={custom} ui={customUi} onUiChange={onCustomUiChange} onChange={onCustomChange} />
+            )}
           </>
         )}
       </div>
@@ -195,7 +224,13 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
             className="w-full"
           />
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"} title="Play / pause (space)" className="w-9 px-0">
+            <Button
+              variant="secondary"
+              onClick={togglePlay}
+              aria-label={playing ? "Pause" : "Play"}
+              title="Play / pause (space)"
+              className="w-9 px-0"
+            >
               {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
             </Button>
             <span className="text-xs text-zinc-300 tabular-nums">
@@ -208,7 +243,11 @@ export function Preview({ project, clip, words, player, fontsReady, mode, onMode
               aria-label={muted ? "Unmute" : "Mute"}
               className="rounded p-1 text-zinc-300 hover:bg-zinc-800"
             >
-              {muted || volume === 0 ? <VolumeX className="size-4" aria-hidden /> : <Volume2 className="size-4" aria-hidden />}
+              {muted || volume === 0 ? (
+                <VolumeX className="size-4" aria-hidden />
+              ) : (
+                <Volume2 className="size-4" aria-hidden />
+              )}
             </button>
             <input
               type="range"

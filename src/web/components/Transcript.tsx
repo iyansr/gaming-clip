@@ -1,11 +1,27 @@
 import { useEffect, useMemo, useRef } from "react";
+
 import type { Clip, Word } from "../../shared/types";
 import { cn } from "../lib/format";
 import { usePlayer, type Player } from "../lib/player";
 import { Empty, Panel } from "./ui";
 
-export function Transcript({ clip, words, loading, error, player }: { clip: Clip; words: Word[]; loading: boolean; error: string | null; player: Player }) {
-  const inClip = useMemo(() => words.filter((w) => w.end > clip.start && w.start < clip.end && w.text.trim() !== ""), [words, clip.start, clip.end]);
+export function Transcript({
+  clip,
+  words,
+  loading,
+  error,
+  player,
+}: {
+  clip: Clip;
+  words: Word[];
+  loading: boolean;
+  error: string | null;
+  player: Player;
+}) {
+  const inClip = useMemo(
+    () => words.filter((w) => w.end > clip.start && w.start < clip.end && w.text.trim() !== ""),
+    [words, clip.start, clip.end],
+  );
 
   /** Index of the last word that has started at the playhead; -1 before the first. */
   const active = usePlayer(player, (p) => {
@@ -49,7 +65,11 @@ export function Transcript({ clip, words, loading, error, player }: { clip: Clip
               title={`Seek to ${w.start.toFixed(1)} s`}
               className={cn(
                 "mr-1 rounded px-1 text-sm transition-colors",
-                i === active ? "bg-yellow-300 font-semibold text-black" : i < active ? "text-zinc-400 hover:bg-zinc-800" : "text-zinc-100 hover:bg-zinc-800",
+                i === active
+                  ? "bg-yellow-300 font-semibold text-black"
+                  : i < active
+                    ? "text-zinc-400 hover:bg-zinc-800"
+                    : "text-zinc-100 hover:bg-zinc-800",
               )}
             >
               {w.text.trim()}

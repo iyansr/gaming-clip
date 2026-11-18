@@ -1,15 +1,19 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AlertTriangle, Brain, Cpu, Film, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+
 import { DEFAULT_OPTIONS, STAGE_ORDER, type Project } from "../../shared/types";
-import { api, errorMessage, media, type Health } from "../lib/api";
-import { cn, fmtTime } from "../lib/format";
-import { Link, navigate } from "../lib/router";
-import { useToast } from "../lib/toast";
+import { SettingsButton, useSettings } from "../components/SettingsDialog";
 import { isProcessing, STAGE_LABEL, StageStrip } from "../components/Stepper";
 import { Badge, Button, Empty, inputClass } from "../components/ui";
+import { api, errorMessage, media, type Health } from "../lib/api";
+import { cn, fmtTime } from "../lib/format";
+import { LANGUAGES, OTHER_LANGUAGE } from "../lib/languages";
+import { Link, navigate } from "../lib/router";
+import { useToast } from "../lib/toast";
 
 export function HomePage() {
   const toast = useToast();
+  const { settings, open: openSettings } = useSettings();
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
@@ -25,6 +29,7 @@ export function HomePage() {
   }, []);
 
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- initial fetch: state is set after the awaited request, never synchronously
     void refresh();
     api.health().then(setHealth, (e: unknown) => setHealthError(errorMessage(e)));
   }, [refresh]);
@@ -50,10 +55,12 @@ export function HomePage() {
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-[1400px] flex-col gap-5 p-6">
-      <header className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <Film className="size-6 text-indigo-400" aria-hidden />
         <h1 className="text-xl font-semibold">Gaming Clip</h1>
         <span className="text-sm text-zinc-400">Long gameplay videos in, vertical shorts out.</span>
+        <span className="flex-1" />
+        <SettingsButton />
       </header>
 
       {healthError && (
@@ -64,7 +71,8 @@ export function HomePage() {
       {brokenDeps.length > 0 && (
         <div role="alert" className="rounded-lg border border-red-800 bg-red-950/60 px-4 py-3">
           <p className="flex items-center gap-2 text-sm font-semibold text-red-100">
-            <AlertTriangle className="size-4 text-red-400" aria-hidden /> {brokenDeps.length} required tool{brokenDeps.length === 1 ? " is" : "s are"} missing. New projects will fail until this is fixed.
+            <AlertTriangle className="size-4 text-red-400" aria-hidden /> {brokenDeps.length} required tool
+            {brokenDeps.length === 1 ? " is" : "s are"} missing. New projects will fail until this is fixed.
           </p>
           <ul className="mt-2 flex flex-col gap-1.5 text-sm">
             {brokenDeps.map((d) => (
@@ -80,22 +88,41 @@ export function HomePage() {
 
       <div className="grid grid-cols-[minmax(320px,400px)_minmax(0,1fr)] items-start gap-6">
         <div className="flex flex-col gap-3">
-          <NewProjectForm onCreated={(created) => (created.length === 1 && created[0] ? navigate(`/project/${created[0].id}`) : void refresh())} />
-          {health && (
+          <NewProjectForm
+            defaultLanguage={settings?.values.defaultLanguage}
+            onCreated={(created) =>
+              created.length === 1 && created[0] ? navigate(`/project/${created[0].id}`) : void refresh()
+            }
+          />
+          {settings && (
             <p
               className={cn(
                 "flex items-start gap-2 rounded-lg border px-3 py-2 text-xs",
-                health.llm ? "border-indigo-800 bg-indigo-950/40 text-indigo-200" : "border-zinc-800 bg-zinc-900 text-zinc-300",
+                settings.values.aiMode !== "off"
+                  ? "border-indigo-800 bg-indigo-950/40 text-indigo-200"
+                  : "border-zinc-800 bg-zinc-900 text-zinc-300",
               )}
             >
-              {health.llm ? <Brain className="mt-0.5 size-4 shrink-0" aria-hidden /> : <Cpu className="mt-0.5 size-4 shrink-0" aria-hidden />}
-              {health.llm ? (
+              {settings.values.aiMode !== "off" ? (
+                <Brain className="mt-0.5 size-4 shrink-0" aria-hidden />
+              ) : (
+                <Cpu className="mt-0.5 size-4 shrink-0" aria-hidden />
+              )}
+              {settings.values.aiMode !== "off" ? (
                 <span>
-                  <b>Highlights engine: LLM.</b> Moments are chosen by your configured model.
+                  <b>Highlights engine: AI.</b> Moments are chosen by your configured AI.{" "}
+                  <button type="button" onClick={openSettings} className="rounded underline hover:text-white">
+                    Change in Settings
+                  </button>
                 </span>
               ) : (
                 <span>
-                  <b>Highlights engine: heuristics.</b> Moments come from audio loudness and transcript cues. To let a model pick them, set <code>LLM_COMMAND</code> (a signed-in agent CLI, e.g. <code>claude -p --tools ""</code>) or <code>LLM_MODEL</code> with <code>LLM_PROVIDER</code> and <code>LLM_API_KEY</code> in <code>.env</code>.
+                  <b>Highlights engine: built-in.</b> Moments come from audio loudness and what is said. To let an AI
+                  pick them,{" "}
+                  <button type="button" onClick={openSettings} className="rounded underline hover:text-white">
+                    turn on Highlight AI in Settings
+                  </button>
+                  .
                 </span>
               )}
             </p>
@@ -113,7 +140,10 @@ export function HomePage() {
             )}
           </div>
           {listError && (
-            <div role="alert" className="mb-3 flex items-center gap-3 rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-100">
+            <div
+              role="alert"
+              className="mb-3 flex items-center gap-3 rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-100"
+            >
               <span className="flex-1">Could not load projects: {listError}</span>
               <Button small onClick={() => void refresh()}>
                 Retry
@@ -141,17 +171,13 @@ export function HomePage() {
   );
 }
 
-const LANGUAGES: [string, string][] = [
-  ["auto", "Auto-detect"],
-  ["en", "English"],
-  ["id", "Indonesian"],
-  ["ja", "Japanese"],
-  ["es", "Spanish"],
-  ["pt", "Portuguese"],
-];
-const OTHER = "__other";
-
-function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => void }) {
+function NewProjectForm({
+  defaultLanguage,
+  onCreated,
+}: {
+  defaultLanguage?: string;
+  onCreated: (projects: Project[]) => void;
+}) {
   const toast = useToast();
   const [text, setText] = useState("");
   const [language, setLanguage] = useState(DEFAULT_OPTIONS.language);
@@ -162,6 +188,21 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
   const [maxDuration, setMaxDuration] = useState(String(DEFAULT_OPTIONS.maxDuration));
   const [busy, setBusy] = useState(false);
 
+  // The language chosen in Settings pre-fills the form (again after it changes there); the user can still override it per project.
+  // Adjusted during render when the setting changes, the documented alternative to an effect that only copies a prop into state.
+  const [appliedDefault, setAppliedDefault] = useState<string | undefined>(undefined);
+  if (defaultLanguage !== appliedDefault) {
+    setAppliedDefault(defaultLanguage);
+    if (defaultLanguage) {
+      if (LANGUAGES.some(([code]) => code === defaultLanguage)) {
+        setLanguage(defaultLanguage);
+      } else {
+        setLanguage(OTHER_LANGUAGE);
+        setCustom(defaultLanguage);
+      }
+    }
+  }
+
   const inputs = text
     .split("\n")
     .map((l) => l.trim())
@@ -169,7 +210,7 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const lang = language === OTHER ? custom.trim() : language;
+    const lang = language === OTHER_LANGUAGE ? custom.trim() : language;
     if (!lang) {
       toast.error("Enter a language code, for example fr");
       return;
@@ -216,7 +257,11 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
   );
 
   return (
-    <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4" aria-label="New project">
+    <form
+      onSubmit={(e) => void submit(e)}
+      className="flex flex-col gap-3 rounded-lg border border-zinc-800 bg-zinc-900 p-4"
+      aria-label="New project"
+    >
       <h2 className="text-sm font-semibold tracking-wide text-zinc-400 uppercase">New project</h2>
       <label className="flex flex-col gap-1 text-xs text-zinc-400">
         YouTube URLs or local file paths, one per line
@@ -238,25 +283,45 @@ function NewProjectForm({ onCreated }: { onCreated: (projects: Project[]) => voi
                 {name}
               </option>
             ))}
-            <option value={OTHER}>Other...</option>
+            <option value={OTHER_LANGUAGE}>Other...</option>
           </select>
         </label>
-        {language === OTHER ? (
+        {language === OTHER_LANGUAGE ? (
           <label className="flex flex-col gap-1 text-xs text-zinc-400">
             Language code
-            <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="fr" className={inputClass} required />
+            <input
+              value={custom}
+              onChange={(e) => setCustom(e.target.value)}
+              placeholder="fr"
+              className={inputClass}
+              required
+            />
           </label>
         ) : (
           clipField
         )}
-        {language === OTHER && clipField}
+        {language === OTHER_LANGUAGE && clipField}
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           Min clip (s)
-          <input type="number" min={3} value={minDuration} onChange={(e) => setMinDuration(e.target.value)} className={inputClass} required />
+          <input
+            type="number"
+            min={3}
+            value={minDuration}
+            onChange={(e) => setMinDuration(e.target.value)}
+            className={inputClass}
+            required
+          />
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
           Max clip (s)
-          <input type="number" max={180} value={maxDuration} onChange={(e) => setMaxDuration(e.target.value)} className={inputClass} required />
+          <input
+            type="number"
+            max={180}
+            value={maxDuration}
+            onChange={(e) => setMaxDuration(e.target.value)}
+            className={inputClass}
+            required
+          />
         </label>
       </div>
       <Button variant="primary" type="submit" disabled={busy || inputs.length === 0}>
@@ -280,21 +345,43 @@ function ProjectCard({ project, onDelete }: { project: Project; onDelete: () => 
   const title = project.source?.title ?? project.input;
 
   return (
-    <li className="group flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-zinc-600" data-project={project.id}>
-      <Link href={`/project/${project.id}`} className="relative block aspect-video bg-zinc-950" aria-label={`Open ${title}`}>
+    <li
+      className="group flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-zinc-600"
+      data-project={project.id}
+    >
+      <Link
+        href={`/project/${project.id}`}
+        className="relative block aspect-video bg-zinc-950"
+        aria-label={`Open ${title}`}
+      >
         {downloaded && !thumbFailed ? (
-          <img src={media.thumbnail(project.id)} alt="" onError={() => setThumbFailed(true)} className="size-full object-cover" />
+          <img
+            src={media.thumbnail(project.id)}
+            alt=""
+            onError={() => setThumbFailed(true)}
+            className="size-full object-cover"
+          />
         ) : (
           <span className="grid size-full place-items-center text-zinc-600">
-            {running === "download" ? <Loader2 className="size-7 animate-spin" aria-hidden /> : <Film className="size-8" aria-hidden />}
+            {running === "download" ? (
+              <Loader2 className="size-7 animate-spin" aria-hidden />
+            ) : (
+              <Film className="size-8" aria-hidden />
+            )}
           </span>
         )}
         {project.source && (
-          <span className="absolute right-2 bottom-2 rounded bg-black/75 px-1.5 py-0.5 text-xs text-white tabular-nums">{fmtTime(project.source.duration)}</span>
+          <span className="absolute right-2 bottom-2 rounded bg-black/75 px-1.5 py-0.5 text-xs text-white tabular-nums">
+            {fmtTime(project.source.duration)}
+          </span>
         )}
       </Link>
       <div className="flex flex-1 flex-col gap-2.5 p-3">
-        <Link href={`/project/${project.id}`} className="line-clamp-2 text-sm leading-snug font-medium hover:text-indigo-300" title={title}>
+        <Link
+          href={`/project/${project.id}`}
+          className="line-clamp-2 text-sm leading-snug font-medium hover:text-indigo-300"
+          title={title}
+        >
           {title}
         </Link>
         <StageStrip project={project} />
@@ -335,7 +422,13 @@ function ProjectCard({ project, onDelete }: { project: Project; onDelete: () => 
               </Button>
             </span>
           ) : (
-            <Button variant="ghost" small onClick={() => setConfirming(true)} aria-label={`Delete project ${title}`} title="Delete project">
+            <Button
+              variant="ghost"
+              small
+              onClick={() => setConfirming(true)}
+              aria-label={`Delete project ${title}`}
+              title="Delete project"
+            >
               <Trash2 className="size-3.5" aria-hidden />
             </Button>
           )}

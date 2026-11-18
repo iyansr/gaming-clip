@@ -1,9 +1,11 @@
-import { useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, Camera, ExternalLink, RefreshCw, Sparkles, WifiOff } from "lucide-react";
+import { useRef, useState } from "react";
+
 import { STAGE_ORDER, type Project, type StageId } from "../../shared/types";
 import { api } from "../lib/api";
 import { Link } from "../lib/router";
 import { useToast } from "../lib/toast";
+import { SettingsButton } from "./SettingsDialog";
 import { STAGE_LABEL, Stepper } from "./Stepper";
 import { Button, inputClass } from "./ui";
 
@@ -37,7 +39,10 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
   return (
     <header className="flex flex-col gap-2 border-b border-zinc-800 bg-zinc-950 px-4 py-2.5">
       <div className="flex items-center gap-3">
-        <Link href="/" className="inline-flex shrink-0 items-center gap-1 rounded text-sm text-zinc-300 hover:text-white">
+        <Link
+          href="/"
+          className="inline-flex shrink-0 items-center gap-1 rounded text-sm text-zinc-300 hover:text-white"
+        >
           <ArrowLeft className="size-4" aria-hidden /> Projects
         </Link>
         <div className="min-w-0 flex-1">
@@ -47,8 +52,14 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
           <p className="flex items-center gap-1.5 text-xs text-zinc-400">
             {project.source?.channel && <span className="truncate">{project.source.channel}</span>}
             {isUrl ? (
-              <a href={project.input} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 text-indigo-300 hover:underline">
-                <span className="truncate">{project.input}</span> <ExternalLink className="size-3 shrink-0" aria-hidden />
+              <a
+                href={project.input}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex min-w-0 items-center gap-1 text-indigo-300 hover:underline"
+              >
+                <span className="truncate">{project.input}</span>{" "}
+                <ExternalLink className="size-3 shrink-0" aria-hidden />
               </a>
             ) : (
               <span className="truncate" title={project.input}>
@@ -58,24 +69,36 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
           </p>
         </div>
         {!online && (
-          <span role="status" className="inline-flex items-center gap-1.5 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300" title="Live updates paused; reconnecting">
+          <span
+            role="status"
+            className="inline-flex items-center gap-1.5 rounded-md bg-amber-950 px-2 py-1 text-xs text-amber-300"
+            title="Live updates paused; reconnecting"
+          >
             <WifiOff className="size-3.5" aria-hidden /> Offline, reconnecting
           </span>
         )}
         <Button onClick={onOpenWebcam} disabled={!downloaded} title="Edit the webcam rectangle">
           <Camera className="size-4" aria-hidden /> Webcam
-          <span className="text-xs font-normal text-zinc-400">{project.webcam.source === "none" ? "none" : project.webcam.rect ? project.webcam.source : "not found"}</span>
+          <span className="text-xs font-normal text-zinc-400">
+            {project.webcam.source === "none" ? "none" : project.webcam.rect ? project.webcam.source : "not found"}
+          </span>
         </Button>
         <FindMoments project={project} disabled={!downloaded || busy} applyProject={applyProject} />
+        <SettingsButton />
       </div>
 
       <Stepper project={project} />
 
       {failed.map((stage) => (
-        <div key={stage} role="alert" className="flex items-start gap-2 rounded-md border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-100">
+        <div
+          key={stage}
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-red-800 bg-red-950/60 px-3 py-2 text-sm text-red-100"
+        >
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-red-400" aria-hidden />
           <div className="min-w-0 flex-1">
-            <b>{STAGE_LABEL[stage]} failed.</b> <span className="break-words whitespace-pre-wrap">{project.stages[stage].error ?? "Unknown error"}</span>
+            <b>{STAGE_LABEL[stage]} failed.</b>{" "}
+            <span className="break-words whitespace-pre-wrap">{project.stages[stage].error ?? "Unknown error"}</span>
           </div>
           <Button variant="danger" small onClick={() => void retry(stage)} disabled={retrying !== null}>
             <RefreshCw className={retrying === stage ? "size-3.5 animate-spin" : "size-3.5"} aria-hidden /> Retry
@@ -85,8 +108,12 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
       {project.warnings.length > 0 && (
         <ul className="flex flex-col gap-1" aria-label="Warnings">
           {project.warnings.map((w, i) => (
-            <li key={i} className="flex items-start gap-2 rounded-md border border-amber-800/70 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> <span className="break-words">{w}</span>
+            <li
+              key={i}
+              className="flex items-start gap-2 rounded-md border border-amber-800/70 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />{" "}
+              <span className="break-words">{w}</span>
             </li>
           ))}
         </ul>
@@ -95,7 +122,15 @@ export function ProjectHeader({ project, online, applyProject, onOpenWebcam }: P
   );
 }
 
-function FindMoments({ project, disabled, applyProject }: { project: Project; disabled: boolean; applyProject: (p: Project) => void }) {
+function FindMoments({
+  project,
+  disabled,
+  applyProject,
+}: {
+  project: Project;
+  disabled: boolean;
+  applyProject: (p: Project) => void;
+}) {
   const toast = useToast();
   const dialog = useRef<HTMLDialogElement>(null);
   const [autoCount, setAutoCount] = useState(project.options.clipCount === null);
@@ -118,7 +153,11 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
     setBusy(true);
     try {
       applyProject(
-        await api.rerun(project.id, "highlights", { clipCount: autoCount ? null : Number(count), minDuration: Number(min), maxDuration: Number(max) }),
+        await api.rerun(project.id, "highlights", {
+          clipCount: autoCount ? null : Number(count),
+          minDuration: Number(min),
+          maxDuration: Number(max),
+        }),
       );
       dialog.current?.close();
     } catch (e) {
@@ -130,10 +169,18 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
 
   return (
     <>
-      <Button variant="primary" onClick={open} disabled={disabled} title={disabled ? "Wait for the pipeline to finish" : undefined}>
+      <Button
+        variant="primary"
+        onClick={open}
+        disabled={disabled}
+        title={disabled ? "Wait for the pipeline to finish" : undefined}
+      >
         <Sparkles className="size-4" aria-hidden /> Find moments again
       </Button>
-      <dialog ref={dialog} className="m-auto w-[26rem] rounded-xl border border-zinc-700 bg-zinc-900 p-0 text-zinc-100 backdrop:bg-black/60">
+      <dialog
+        ref={dialog}
+        className="m-auto w-[26rem] rounded-xl border border-zinc-700 bg-zinc-900 p-0 text-zinc-100 backdrop:bg-black/60"
+      >
         <form
           method="dialog"
           className="flex flex-col gap-3 p-4"
@@ -145,7 +192,10 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
           <h2 className="text-base font-semibold">Find moments again</h2>
           <p className="rounded-md border border-amber-800 bg-amber-950/50 px-3 py-2 text-xs text-amber-200">
             This replaces every clip that was not added by hand
-            {replaced > 0 ? ` (${replaced} clip${replaced === 1 ? "" : "s"}), including your trims and settings on them` : ""}. Manual clips are kept.
+            {replaced > 0
+              ? ` (${replaced} clip${replaced === 1 ? "" : "s"}), including your trims and settings on them`
+              : ""}
+            . Manual clips are kept.
           </p>
           <div className="grid grid-cols-3 gap-2">
             <div className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -168,11 +218,25 @@ function FindMoments({ project, disabled, applyProject }: { project: Project; di
             </div>
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
               Min (s)
-              <input type="number" min={3} value={min} onChange={(e) => setMin(e.target.value)} className={inputClass} required />
+              <input
+                type="number"
+                min={3}
+                value={min}
+                onChange={(e) => setMin(e.target.value)}
+                className={inputClass}
+                required
+              />
             </label>
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
               Max (s)
-              <input type="number" max={180} value={max} onChange={(e) => setMax(e.target.value)} className={inputClass} required />
+              <input
+                type="number"
+                max={180}
+                value={max}
+                onChange={(e) => setMax(e.target.value)}
+                className={inputClass}
+                required
+              />
             </label>
           </div>
           <div className="flex justify-end gap-2">

@@ -1,7 +1,9 @@
 import { copyFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
+
 import type { SourceMeta } from "../shared/types";
 import { BIN } from "./config";
+import { videoEncoderArgs } from "./encoder";
 import { run } from "./exec";
 
 interface ProbeStream {
@@ -66,9 +68,7 @@ function needsTranscode(streams: ProbeStream[]): boolean {
   const video = streams.find((s) => s.codec_type === "video");
   const audio = streams.find((s) => s.codec_type === "audio");
   return (
-    video?.codec_name !== "h264" ||
-    (video.height ?? 0) > 1080 ||
-    (audio !== undefined && audio.codec_name !== "aac")
+    video?.codec_name !== "h264" || (video.height ?? 0) > 1080 || (audio !== undefined && audio.codec_name !== "aac")
   );
 }
 
@@ -81,12 +81,9 @@ async function transcode(input: string, output: string, signal?: AbortSignal): P
         "-y",
         "-i",
         input,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "20",
+        ...(await videoEncoderArgs()),
+        "-pix_fmt",
+        "yuv420p",
         "-vf",
         "scale=-2:min(1080\\,ih)",
         "-c:a",
@@ -126,13 +123,15 @@ async function transcribeYtDlp(
     ) as YtDlpInfo;
   } catch (error) {
     // A playlist with unavailable entries makes `-J` exit non-zero instead of returning `_type: "playlist"`.
-    if (PLAYLIST_URL.test(url)) throw new Error(PLAYLIST_ERROR);
+    if (PLAYLIST_URL.test(url)) throw new Error(PLAYLIST_ERROR, { cause: error });
     throw error;
   }
   // `--no-playlist` only unwraps a video's &list= parameter; a pure playlist/channel URL still resolves to a playlist.
   if (info._type === "playlist") throw new Error(PLAYLIST_ERROR);
   const title = info.title ?? url;
-  const total = info.duration ? `${Math.floor(info.duration / 60)}:${String(Math.round(info.duration % 60)).padStart(2, "0")}` : "?";
+  const total = info.duration
+    ? `${Math.floor(info.duration / 60)}:${String(Math.round(info.duration % 60)).padStart(2, "0")}`
+    : "?";
   onProgress(0.02, `Downloading "${title}" (${total})`);
 
   // The download runs one pass per selected stream (video, then audio), each reporting its own 0-100%.
@@ -206,7 +205,10 @@ export async function fetchSource(
     };
   } else {
     const localPath = resolve(input);
-    const isFile = await stat(localPath).then((s) => s.isFile(), () => false);
+    const isFile = await stat(localPath).then(
+      (s) => s.isFile(),
+      () => false,
+    );
     if (!isFile) throw new Error(`Not a video file or URL: ${input}`);
     const extension = extname(localPath).toLowerCase();
     const { streams } = await probeJson(localPath);

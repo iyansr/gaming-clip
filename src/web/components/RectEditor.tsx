@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { Loader2, X } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+
 import type { Rect, Size } from "../../shared/types";
 import { media } from "../lib/api";
 import { clamp, cn, fmtTime } from "../lib/format";
@@ -12,14 +13,62 @@ export type Edge = "n" | "s" | "e" | "w";
 
 /** `outer` centres the handle on the box edge; `inner` keeps it inside (for boxes that touch the clipped frame edge). */
 export const HANDLES: { id: string; edges: Edge[]; outer: string; inner: string; cursor: string }[] = [
-  { id: "nw", edges: ["n", "w"], outer: "left-0 top-0 -translate-x-1/2 -translate-y-1/2", inner: "left-0 top-0", cursor: "nwse-resize" },
-  { id: "n", edges: ["n"], outer: "left-1/2 top-0 -translate-x-1/2 -translate-y-1/2", inner: "left-1/2 top-0 -translate-x-1/2", cursor: "ns-resize" },
-  { id: "ne", edges: ["n", "e"], outer: "left-full top-0 -translate-x-1/2 -translate-y-1/2", inner: "right-0 top-0", cursor: "nesw-resize" },
-  { id: "e", edges: ["e"], outer: "left-full top-1/2 -translate-x-1/2 -translate-y-1/2", inner: "right-0 top-1/2 -translate-y-1/2", cursor: "ew-resize" },
-  { id: "se", edges: ["s", "e"], outer: "left-full top-full -translate-x-1/2 -translate-y-1/2", inner: "right-0 bottom-0", cursor: "nwse-resize" },
-  { id: "s", edges: ["s"], outer: "left-1/2 top-full -translate-x-1/2 -translate-y-1/2", inner: "left-1/2 bottom-0 -translate-x-1/2", cursor: "ns-resize" },
-  { id: "sw", edges: ["s", "w"], outer: "left-0 top-full -translate-x-1/2 -translate-y-1/2", inner: "bottom-0 left-0", cursor: "nesw-resize" },
-  { id: "w", edges: ["w"], outer: "left-0 top-1/2 -translate-x-1/2 -translate-y-1/2", inner: "left-0 top-1/2 -translate-y-1/2", cursor: "ew-resize" },
+  {
+    id: "nw",
+    edges: ["n", "w"],
+    outer: "left-0 top-0 -translate-x-1/2 -translate-y-1/2",
+    inner: "left-0 top-0",
+    cursor: "nwse-resize",
+  },
+  {
+    id: "n",
+    edges: ["n"],
+    outer: "left-1/2 top-0 -translate-x-1/2 -translate-y-1/2",
+    inner: "left-1/2 top-0 -translate-x-1/2",
+    cursor: "ns-resize",
+  },
+  {
+    id: "ne",
+    edges: ["n", "e"],
+    outer: "left-full top-0 -translate-x-1/2 -translate-y-1/2",
+    inner: "right-0 top-0",
+    cursor: "nesw-resize",
+  },
+  {
+    id: "e",
+    edges: ["e"],
+    outer: "left-full top-1/2 -translate-x-1/2 -translate-y-1/2",
+    inner: "right-0 top-1/2 -translate-y-1/2",
+    cursor: "ew-resize",
+  },
+  {
+    id: "se",
+    edges: ["s", "e"],
+    outer: "left-full top-full -translate-x-1/2 -translate-y-1/2",
+    inner: "right-0 bottom-0",
+    cursor: "nwse-resize",
+  },
+  {
+    id: "s",
+    edges: ["s"],
+    outer: "left-1/2 top-full -translate-x-1/2 -translate-y-1/2",
+    inner: "left-1/2 bottom-0 -translate-x-1/2",
+    cursor: "ns-resize",
+  },
+  {
+    id: "sw",
+    edges: ["s", "w"],
+    outer: "left-0 top-full -translate-x-1/2 -translate-y-1/2",
+    inner: "bottom-0 left-0",
+    cursor: "nesw-resize",
+  },
+  {
+    id: "w",
+    edges: ["w"],
+    outer: "left-0 top-1/2 -translate-x-1/2 -translate-y-1/2",
+    inner: "left-0 top-1/2 -translate-y-1/2",
+    cursor: "ew-resize",
+  },
 ];
 
 interface Drag {
@@ -96,7 +145,12 @@ export function RectStage({
 
   const onKey = (e: KeyboardEvent) => {
     const step = e.shiftKey ? 10 : 1;
-    const delta: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+    const delta: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0],
+      ArrowRight: [step, 0],
+      ArrowUp: [0, -step],
+      ArrowDown: [0, step],
+    };
     const d = delta[e.key];
     if (!d) return;
     e.preventDefault();
@@ -104,14 +158,21 @@ export function RectStage({
   };
 
   return (
-    <div ref={stage} className="relative mx-auto w-full max-w-[880px] touch-none bg-black select-none" style={{ aspectRatio: `${sw} / ${sh}` }}>
+    <div
+      ref={stage}
+      className="relative mx-auto w-full max-w-[880px] touch-none bg-black select-none"
+      style={{ aspectRatio: `${sw} / ${sh}` }}
+    >
       <img
         src={media.frame(projectId, frameTime, 1280)}
         alt={`Source frame at ${fmtTime(frameTime)}`}
         draggable={false}
         onLoad={() => setLoaded({ time: frameTime, ok: true })}
         onError={() => setLoaded({ time: frameTime, ok: false })}
-        className={cn("absolute inset-0 size-full object-fill transition-opacity", frameState === "ready" ? "opacity-100" : "opacity-40")}
+        className={cn(
+          "absolute inset-0 size-full object-fill transition-opacity",
+          frameState === "ready" ? "opacity-100" : "opacity-40",
+        )}
       />
       <div className="pointer-events-none absolute inset-0 overflow-hidden" aria-hidden>
         <div
@@ -119,11 +180,15 @@ export function RectStage({
           style={{ left: pct(rect.x, sw), top: pct(rect.y, sh), width: pct(rect.w, sw), height: pct(rect.h, sh) }}
         />
       </div>
-      {frameState === "loading" && <Loader2 className="absolute top-3 right-3 size-5 animate-spin text-white" aria-label="Loading frame" />}
-      {frameState === "error" && <p className="absolute inset-x-0 top-3 text-center text-sm text-red-300">Could not load this frame.</p>}
+      {frameState === "loading" && (
+        <Loader2 className="absolute top-3 right-3 size-5 animate-spin text-white" aria-label="Loading frame" />
+      )}
+      {frameState === "error" && (
+        <p className="absolute inset-x-0 top-3 text-center text-sm text-red-300">Could not load this frame.</p>
+      )}
       <div
         tabIndex={0}
-        role="group"
+        role="button"
         aria-label={`${label} x ${rect.x}, y ${rect.y}, ${rect.w} by ${rect.h}. Arrow keys move it.`}
         onPointerDown={(e) => beginDrag(e, null)}
         onPointerMove={onMove}
@@ -222,13 +287,34 @@ export function FrameTime({ time, max, onChange }: { time: number; max: number; 
         <span>Frame time</span>
         <span className="text-zinc-200 tabular-nums">{fmtTime(time)}</span>
       </span>
-      <input type="range" min={0} max={max} step={0.5} value={time} onChange={(e) => onChange(Number(e.target.value))} />
+      <input
+        type="range"
+        min={0}
+        max={max}
+        step={0.5}
+        value={time}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
     </label>
   );
 }
 
 /** Native modal dialog with the editors' shared title bar. */
-export function Modal({ titleId, icon, title, extra, onClose, children }: { titleId: string; icon: ReactNode; title: string; extra?: ReactNode; onClose: () => void; children: ReactNode }) {
+export function Modal({
+  titleId,
+  icon,
+  title,
+  extra,
+  onClose,
+  children,
+}: {
+  titleId: string;
+  icon: ReactNode;
+  title: string;
+  extra?: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+}) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const el = dialog.current;
@@ -251,7 +337,12 @@ export function Modal({ titleId, icon, title, extra, onClose, children }: { titl
           </h2>
           {extra}
           <span className="flex-1" />
-          <button type="button" onClick={onClose} aria-label="Close" className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+          >
             <X className="size-5" />
           </button>
         </div>

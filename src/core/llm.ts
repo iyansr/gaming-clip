@@ -1,9 +1,11 @@
 import { tmpdir } from "node:os";
+
 import Anthropic from "@anthropic-ai/sdk";
 import { AnthropicClient } from "@anvia/anthropic";
 import { generateCompletion } from "@anvia/core/completion";
 import { OpenAIClient } from "@anvia/openai";
-import { LLM } from "./config";
+
+import { getLlm } from "./settings";
 
 export interface ChatMessage {
   role: "system" | "user";
@@ -35,19 +37,30 @@ function parseJsonAnswer(text: string): unknown {
  * Runs in the temp dir so a coding-agent CLI does not load this repository's instructions.
  */
 async function askCommand(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+  const { command } = getLlm();
   const timeout = AbortSignal.timeout(COMMAND_TIMEOUT_MS);
   const stop = signal ? AbortSignal.any([signal, timeout]) : timeout;
   stop.throwIfAborted();
-  // Own process group: a compound command (`a | b`, `cd x && cli`) leaves grandchildren holding
-  // the stdout pipe, so stopping must kill the whole group, not just `sh`.
-  const proc = Bun.spawn(["sh", "-c", LLM.command], {
+  // POSIX: own process group, since a compound command (`a | b`, `cd x && cli`) leaves grandchildren
+  // holding the stdout pipe, so stopping must kill the whole group, not just `sh`.
+  // Windows: cmd.exe gets the command verbatim (`/s` strips the outer quotes) and `taskkill /T` kills the tree.
+  const windows = process.platform === "win32";
+  const proc = Bun.spawn(windows ? ["cmd.exe", "/d", "/s", "/c", `"${command}"`] : ["sh", "-c", command], {
     cwd: tmpdir(),
     stdin: new Blob([messages.map((message) => message.content).join("\n\n")]),
     stdout: "pipe",
     stderr: "pipe",
-    detached: true,
+    ...(windows ? { windowsVerbatimArguments: true, windowsHide: true } : { detached: true }),
   });
   const killGroup = () => {
+    if (windows) {
+      Bun.spawn(["taskkill", "/T", "/F", "/PID", String(proc.pid)], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      return;
+    }
     try {
       process.kill(-proc.pid, "SIGKILL");
     } catch {
@@ -78,12 +91,12 @@ async function askCommand(messages: ChatMessage[], signal?: AbortSignal): Promis
 }
 
 /**
- * Ask the configured model for a JSON answer: through LLM_COMMAND when set, otherwise through
- * the OpenAI-compatible endpoint. A malformed answer (seen in practice: an unescaped quote in a
- * title) is asked for once more. Throws on transport errors and on a second unparsable answer.
+ * Ask the configured model for a JSON answer: through the AI app command (LLM_COMMAND or a settings preset) when
+ * one is chosen, otherwise through the OpenAI/Claude-compatible endpoint. A malformed answer (seen in practice: an
+ * unescaped quote in a title) is asked for once more. Throws on transport errors and on a second unparsable answer.
  */
 export async function chatJson(messages: ChatMessage[], signal?: AbortSignal): Promise<unknown> {
-  const ask = LLM.command ? askCommand : askEndpoint;
+  const ask = getLlm().command ? askCommand : askEndpoint;
   try {
     return parseJsonAnswer(await ask(messages, signal));
   } catch (error) {
@@ -94,33 +107,85 @@ export async function chatJson(messages: ChatMessage[], signal?: AbortSignal): P
 
 /** Ask through Anvia: an OpenAI-compatible (Chat Completions) or Anthropic-compatible (Messages) API. */
 async function askEndpoint(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
-  if (!LLM.model) throw new Error("LLM is not configured (LLM_MODEL is required)");
+  const llm = getLlm();
+  if ((llm.mode !== "openai" && llm.mode !== "anthropic") || !llm.model)
+    throw new Error("The highlight AI is not set up: open Settings and choose a model");
   // The SDKs refuse an empty key; local servers (Ollama, LM Studio) ignore whatever is sent.
-  const client = { apiKey: LLM.apiKey || "none", ...(LLM.baseUrl ? { baseUrl: LLM.baseUrl } : {}) };
+  const client = { apiKey: llm.apiKey || "none", ...(llm.baseUrl ? { baseUrl: llm.baseUrl } : {}) };
   const request = {
-    instructions: messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n"),
-    prompt: messages.filter((message) => message.role === "user").map((message) => message.content).join("\n\n"),
-    abortSignal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    instructions: messages
+      .filter((message) => message.role === "system")
+      .map((message) => message.content)
+      .join("\n\n"),
+    prompt: messages
+      .filter((message) => message.role === "user")
+      .map((message) => message.content)
+      .join("\n\n"),
+    abortSignal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
+      : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   };
   try {
-    if (LLM.provider === "anthropic") {
+    if (llm.provider === "anthropic") {
       // The Anthropic SDK sends the key as `Authorization: Bearer`. Claude-compatible gateways
       // commonly check `x-api-key` instead, so a custom base URL gets both headers.
-      const anthropic = LLM.baseUrl
+      const anthropic = llm.baseUrl
         ? new AnthropicClient({
-            client: new Anthropic({ apiKey: client.apiKey, baseURL: LLM.baseUrl, maxRetries: 0, defaultHeaders: { "x-api-key": client.apiKey } }),
+            client: new Anthropic({
+              apiKey: client.apiKey,
+              baseURL: llm.baseUrl,
+              maxRetries: 0,
+              defaultHeaders: { "x-api-key": client.apiKey },
+            }),
           })
         : new AnthropicClient(client);
-      return (await generateCompletion({ ...request, model: anthropic.completionModel({ modelId: LLM.model }) })).text;
+      return (await generateCompletion({ ...request, model: anthropic.completionModel({ modelId: llm.model }) })).text;
     }
-    if (LLM.provider === "openai") {
-      return (await generateCompletion({ ...request, model: new OpenAIClient(client).completionModel({ modelId: LLM.model, api: "chat" }) })).text;
-    }
+    return (
+      await generateCompletion({
+        ...request,
+        model: new OpenAIClient(client).completionModel({ modelId: llm.model, api: "chat" }),
+      })
+    ).text;
   } catch (error) {
     if (signal?.aborted) throw error;
-    if (request.abortSignal.aborted) throw new Error(`LLM request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
+    if (request.abortSignal.aborted)
+      throw new Error(`LLM request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, { cause: error });
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`LLM request failed: ${message.slice(0, BODY_EXCERPT)}`);
+    // An error body can echo the request; the key must never reach the UI or project warnings.
+    throw new Error(
+      `LLM request failed: ${(llm.apiKey.length >= 4 ? message.replaceAll(llm.apiKey, "***") : message).slice(0, BODY_EXCERPT)}`,
+      { cause: error },
+    );
   }
-  throw new Error(`Unknown LLM_PROVIDER "${LLM.provider}" (use "openai" or "anthropic")`);
+}
+
+const TEST_TIMEOUT_MS = 60_000;
+
+/** One tiny real request through the configured transport, for the Settings "Test" button. Never throws. */
+export async function testLlm(): Promise<{ ok: boolean; ms: number; error?: string }> {
+  const started = performance.now();
+  const elapsed = () => Math.round(performance.now() - started);
+  if (getLlm().mode === "off")
+    return { ok: false, ms: 0, error: "Highlight AI is off. Choose an option and save first." };
+  const signal = AbortSignal.timeout(TEST_TIMEOUT_MS);
+  try {
+    const answer = await chatJson(
+      [
+        { role: "system", content: "You are a connectivity check. Answer with JSON only." },
+        { role: "user", content: 'Reply with exactly this JSON and nothing else: {"ok":true}' },
+      ],
+      signal,
+    );
+    if (typeof answer === "object" && answer !== null && "ok" in answer && answer.ok === true)
+      return { ok: true, ms: elapsed() };
+    return {
+      ok: false,
+      ms: elapsed(),
+      error: `The AI answered, but not with the expected JSON: ${JSON.stringify(answer).slice(0, BODY_EXCERPT)}`,
+    };
+  } catch (error) {
+    if (signal.aborted) return { ok: false, ms: elapsed(), error: `No answer after ${TEST_TIMEOUT_MS / 1000}s` };
+    return { ok: false, ms: elapsed(), error: error instanceof Error ? error.message : String(error) };
+  }
 }

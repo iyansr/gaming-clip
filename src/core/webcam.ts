@@ -1,4 +1,5 @@
 import * as ort from "onnxruntime-node";
+
 import type { Rect, Webcam } from "../shared/types";
 import { MODELS } from "./config";
 import { grabFrame } from "./frames";
@@ -91,7 +92,13 @@ function toTensor(rgb: Uint8Array, width: number, height: number, region: Rect, 
   return out;
 }
 
-async function detectInRegion(session: Session, rgb: Uint8Array, width: number, height: number, region: Rect): Promise<Face[]> {
+async function detectInRegion(
+  session: Session,
+  rgb: Uint8Array,
+  width: number,
+  height: number,
+  region: Rect,
+): Promise<Face[]> {
   const scale = NET / Math.max(region.w, region.h);
   const input = new ort.Tensor("float32", toTensor(rgb, width, height, region, scale), [1, 3, NET, NET]);
   const out = await session.run({ input });
@@ -151,7 +158,8 @@ class EdgeSums {
   add(rgb: Uint8Array): void {
     const { width, height, vertical, horizontal } = this;
     const gray = new Uint8Array(width * height);
-    for (let i = 0; i < gray.length; i++) gray[i] = (77 * rgb[i * 3]! + 150 * rgb[i * 3 + 1]! + 29 * rgb[i * 3 + 2]!) >> 8;
+    for (let i = 0; i < gray.length; i++)
+      gray[i] = (77 * rgb[i * 3]! + 150 * rgb[i * 3 + 1]! + 29 * rgb[i * 3 + 2]!) >> 8;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
@@ -220,10 +228,22 @@ function clusterFaces(perFrame: Face[][]): FaceCluster | null {
       h: median(members.map((f) => f.h)),
     },
     extent: {
-      x0: percentile(members.map((f) => f.x), 0.1),
-      y0: percentile(members.map((f) => f.y), 0.1),
-      x1: percentile(members.map((f) => f.x + f.w), 0.9),
-      y1: percentile(members.map((f) => f.y + f.h), 0.9),
+      x0: percentile(
+        members.map((f) => f.x),
+        0.1,
+      ),
+      y0: percentile(
+        members.map((f) => f.y),
+        0.1,
+      ),
+      x1: percentile(
+        members.map((f) => f.x + f.w),
+        0.9,
+      ),
+      y1: percentile(
+        members.map((f) => f.y + f.h),
+        0.9,
+      ),
     },
   };
 }
@@ -248,14 +268,20 @@ class PersistentEdges {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
-        const hit = Math.abs(v[i]!) >= need || (x > 0 && Math.abs(v[i - 1]!) >= need) || (x + 1 < width && Math.abs(v[i + 1]!) >= need);
+        const hit =
+          Math.abs(v[i]!) >= need ||
+          (x > 0 && Math.abs(v[i - 1]!) >= need) ||
+          (x + 1 < width && Math.abs(v[i + 1]!) >= need);
         this.colPrefix[(y + 1) * width + x] = this.colPrefix[i]! + (hit ? 1 : 0);
       }
     }
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const i = y * width + x;
-        const hit = Math.abs(h[i]!) >= need || (y > 0 && Math.abs(h[i - width]!) >= need) || (y + 1 < height && Math.abs(h[i + width]!) >= need);
+        const hit =
+          Math.abs(h[i]!) >= need ||
+          (y > 0 && Math.abs(h[i - width]!) >= need) ||
+          (y + 1 < height && Math.abs(h[i + width]!) >= need);
         this.rowPrefix[y * (width + 1) + x + 1] = this.rowPrefix[y * (width + 1) + x]! + (hit ? 1 : 0);
       }
     }
@@ -281,7 +307,14 @@ class PersistentEdges {
  * Strongest boundary positions in [from, to) by `coverage`, at least `gap` px apart. Dilated edges give
  * 3 px plateaus; the neighbour bonus makes the plateau centre win.
  */
-function peaks(from: number, to: number, coverage: (p: number) => number, min: number, gap: number, max: number): number[] {
+function peaks(
+  from: number,
+  to: number,
+  coverage: (p: number) => number,
+  min: number,
+  gap: number,
+  max: number,
+): number[] {
   const scored: { p: number; rank: number }[] = [];
   for (let p = from; p < to; p++) {
     const c = coverage(p);
@@ -314,7 +347,10 @@ function fitRect(edges: PersistentEdges, face: FaceCluster): RectFit | null {
   // judged over a band three face widths/heights around the face centre.
   const cx = face.box.x + face.box.w / 2;
   const cy = face.box.y + face.box.h / 2;
-  const span = (a: number, b: number, limit: number): [number, number] => [Math.max(0, Math.floor(a)), Math.min(limit, Math.ceil(b))];
+  const span = (a: number, b: number, limit: number): [number, number] => [
+    Math.max(0, Math.floor(a)),
+    Math.min(limit, Math.ceil(b)),
+  ];
   const [bandY0, bandY1] = span(face.box.y, face.box.y + face.box.h, height);
   const [bandX0, bandX1] = span(face.box.x, face.box.x + face.box.w, width);
   const [wideY0, wideY1] = span(cy - face.box.h * 3, cy + face.box.h * 3, height);
@@ -348,7 +384,11 @@ function fitRect(edges: PersistentEdges, face: FaceCluster): RectFit | null {
           ];
           if (Math.min(...sides) < MIN_SIDE_SCORE) continue;
           const score = sides.reduce((a, b) => a + b, 0) / 4;
-          if (!best || score > best.score + 1e-9 || (Math.abs(score - best.score) <= 0.02 && w * h < best.rect.w * best.rect.h)) {
+          if (
+            !best ||
+            score > best.score + 1e-9 ||
+            (Math.abs(score - best.score) <= 0.02 && w * h < best.rect.w * best.rect.h)
+          ) {
             best = { rect: { x: x0, y: y0, w, h }, score };
           }
         }

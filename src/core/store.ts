@@ -1,6 +1,7 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
+
 import {
   DEFAULT_CLIP_SETTINGS,
   DEFAULT_OPTIONS,
@@ -203,7 +204,10 @@ function readBusyPids(id: string, read: (path: string) => string): number[] {
   } catch {
     // no marker
   }
-  return text.split("\n").map(Number).filter((pid) => Number.isInteger(pid) && pid > 0);
+  return text
+    .split("\n")
+    .map(Number)
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
 }
 
 export function pidAlive(pid: number): boolean {

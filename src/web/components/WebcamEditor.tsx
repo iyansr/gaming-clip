@@ -1,5 +1,6 @@
-import { useState } from "react";
 import { RotateCcw, Save, ScanFace, VideoOff } from "lucide-react";
+import { useState } from "react";
+
 import type { Project, Rect } from "../../shared/types";
 import { api } from "../lib/api";
 import { clamp } from "../lib/format";
@@ -7,7 +8,17 @@ import { useToast } from "../lib/toast";
 import { FrameTime, Modal, RectFields, RectStage } from "./RectEditor";
 import { Button } from "./ui";
 
-export function WebcamEditor({ project, initialTime, onClose, applyProject }: { project: Project; initialTime: number; onClose: () => void; applyProject: (p: Project) => void }) {
+export function WebcamEditor({
+  project,
+  initialTime,
+  onClose,
+  applyProject,
+}: {
+  project: Project;
+  initialTime: number;
+  onClose: () => void;
+  applyProject: (p: Project) => void;
+}) {
   const toast = useToast();
   const source = project.source;
   if (!source) throw new Error("WebcamEditor needs a downloaded source");
@@ -50,17 +61,32 @@ export function WebcamEditor({ project, initialTime, onClose, applyProject }: { 
       extra={
         <span className="text-xs text-zinc-400">
           Current: <b className="text-zinc-200">{wc.source}</b>
-          {wc.rect ? ` · confidence ${Math.round(wc.confidence * 100)}%` : wc.source === "none" ? " · no webcam" : " · nothing found"}
+          {wc.rect
+            ? ` · confidence ${Math.round(wc.confidence * 100)}%`
+            : wc.source === "none"
+              ? " · no webcam"
+              : " · nothing found"}
         </span>
       }
     >
-      <RectStage projectId={project.id} time={time} rect={rect} onChange={setRect} size={{ width: sw, height: sh }} label="Webcam rectangle" />
+      <RectStage
+        projectId={project.id}
+        time={time}
+        rect={rect}
+        onChange={setRect}
+        size={{ width: sw, height: sh }}
+        label="Webcam rectangle"
+      />
 
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
         <RectFields rect={rect} onChange={setRect} size={{ width: sw, height: sh }} />
         <FrameTime time={time} max={Math.max(0, duration - 0.5)} onChange={setTime} />
       </div>
-      {!saved && <p className="text-xs text-amber-300">No webcam rectangle is set. Position the rectangle and save it to enable the split layout.</p>}
+      {!saved && (
+        <p className="text-xs text-amber-300">
+          No webcam rectangle is set. Position the rectangle and save it to enable the split layout.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3">
         <Button variant="primary" onClick={() => void run("save")} disabled={busy !== null || !dirty}>

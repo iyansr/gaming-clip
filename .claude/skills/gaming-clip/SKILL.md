@@ -14,7 +14,7 @@ together: changes made by the CLI show up live in an open browser tab.
 ```bash
 bun install
 bun run clip doctor      # ffmpeg, ffprobe, yt-dlp, whisper-cli + 2 model files (whisper, face detector)
-bun run setup            # only when doctor reports something missing (brew + model downloads, ~575 MB once)
+bun run setup            # only when doctor reports something missing: installs tools (Homebrew on macOS, downloads into tools/ otherwise) and models (~575 MB once)
 ```
 
 ## 1. Ingest
@@ -45,6 +45,7 @@ video's baseline (screams, laughter, explosions); `(no speech, LOUD ...)` lines 
 without words. Use both signals.
 
 What makes a good gaming short:
+
 - A reaction with a cause: jump scare, clutch, fail, rage, unexpected glitch, a joke that lands.
 - Self-contained: include the setup (usually 5-15 s before the peak) and the payoff plus a beat of
   reaction after it. Never start or end mid-sentence: use the transcript timestamps as boundaries.
@@ -57,8 +58,13 @@ Write the picks to a JSON file and load them (replaces all earlier non-manual cl
 
 ```json
 [
-  { "start": "2:28", "end": "2:54", "title": "The monster was behind him the whole time",
-    "reason": "Jump scare at 2:41 (+13 dB) after a calm setup, big reaction", "score": 92 }
+  {
+    "start": "2:28",
+    "end": "2:54",
+    "title": "The monster was behind him the whole time",
+    "reason": "Jump scare at 2:41 (+13 dB) after a calm setup, big reaction",
+    "score": 92
+  }
 ]
 ```
 

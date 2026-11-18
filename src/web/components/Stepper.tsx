@@ -1,4 +1,5 @@
 import { AlertCircle, CheckCircle2, Circle, Loader2 } from "lucide-react";
+
 import { STAGE_ORDER, type Project, type StageId, type StageState } from "../../shared/types";
 import { cn } from "../lib/format";
 import { ProgressBar } from "./ui";
@@ -23,7 +24,12 @@ function StageIcon({ stage }: { stage: StageState }) {
   }
 }
 
-const STATUS_TEXT: Record<StageState["status"], string> = { pending: "Waiting", running: "Running", done: "Done", error: "Failed" };
+const STATUS_TEXT: Record<StageState["status"], string> = {
+  pending: "Waiting",
+  running: "Running",
+  done: "Done",
+  error: "Failed",
+};
 
 /** Full stepper for the project header: progress and message per stage. */
 export function Stepper({ project }: { project: Project }) {
@@ -38,7 +44,11 @@ export function Stepper({ project }: { project: Project }) {
             data-status={stage.status}
             className={cn(
               "flex min-w-0 flex-col gap-1 rounded-md border px-2.5 py-1.5",
-              stage.status === "running" ? "border-indigo-500/60 bg-indigo-950/30" : stage.status === "error" ? "border-red-800 bg-red-950/30" : "border-zinc-800 bg-zinc-900",
+              stage.status === "running"
+                ? "border-indigo-500/60 bg-indigo-950/30"
+                : stage.status === "error"
+                  ? "border-red-800 bg-red-950/30"
+                  : "border-zinc-800 bg-zinc-900",
             )}
           >
             <span className="flex items-center gap-1.5 text-xs font-medium text-zinc-100">
@@ -83,13 +93,38 @@ export function StageStrip({ project }: { project: Project }) {
       {STAGE_ORDER.map((id) => {
         const stage = project.stages[id];
         const color =
-          stage.status === "done" ? "bg-emerald-500" : stage.status === "error" ? "bg-red-500" : stage.status === "running" ? "bg-indigo-400" : "bg-zinc-700";
+          stage.status === "done"
+            ? "bg-emerald-500"
+            : stage.status === "error"
+              ? "bg-red-500"
+              : stage.status === "running"
+                ? "bg-indigo-400"
+                : "bg-zinc-700";
         return (
           <li key={id} className="min-w-0" data-stage={id} data-status={stage.status}>
             <div className="h-1 overflow-hidden rounded-full bg-zinc-800">
-              <div className={cn("h-full rounded-full transition-[width] duration-300", color)} style={{ width: stage.status === "running" ? `${Math.max(6, stage.progress * 100)}%` : stage.status === "pending" ? "0%" : "100%" }} />
+              <div
+                className={cn("h-full rounded-full transition-[width] duration-300", color)}
+                style={{
+                  width:
+                    stage.status === "running"
+                      ? `${Math.max(6, stage.progress * 100)}%`
+                      : stage.status === "pending"
+                        ? "0%"
+                        : "100%",
+                }}
+              />
             </div>
-            <span className={cn("mt-1 flex items-center justify-between gap-1 text-[10px] leading-3", stage.status === "error" ? "text-red-300" : stage.status === "running" ? "text-indigo-300" : "text-zinc-400")}>
+            <span
+              className={cn(
+                "mt-1 flex items-center justify-between gap-1 text-[10px] leading-3",
+                stage.status === "error"
+                  ? "text-red-300"
+                  : stage.status === "running"
+                    ? "text-indigo-300"
+                    : "text-zinc-400",
+              )}
+            >
               <span className="truncate">{STAGE_LABEL[id]}</span>
               {stage.status === "running" && <span className="tabular-nums">{Math.round(stage.progress * 100)}%</span>}
             </span>

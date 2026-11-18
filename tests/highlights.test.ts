@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+
 import { findHighlights, formatTranscript, parseLlmClips, type HighlightCandidate } from "../src/core/highlights";
 import type { LoudnessEnvelope, ProjectOptions, Segment, Transcript } from "../src/shared/types";
 
@@ -83,10 +84,15 @@ describe("heuristic highlights", () => {
   });
 
   test("keeps windows inside the video near both edges", async () => {
-    const result = await run([], envelope(120, [
-      { at: 1, seconds: 2, db: -10 },
-      { at: 118, seconds: 2, db: -10 },
-    ]), 120, options({ clipCount: 5 }));
+    const result = await run(
+      [],
+      envelope(120, [
+        { at: 1, seconds: 2, db: -10 },
+        { at: 118, seconds: 2, db: -10 },
+      ]),
+      120,
+      options({ clipCount: 5 }),
+    );
     expect(result.candidates.length).toBeGreaterThanOrEqual(2);
     for (const clip of result.candidates) {
       expect(clip.start).toBeGreaterThanOrEqual(0);
@@ -142,7 +148,11 @@ describe("heuristic highlights", () => {
 
   test("auto takes many moments on an eventful video, up to one per four minutes", async () => {
     const bursts = Array.from({ length: 16 }, (_, index) => ({ at: 60 + index * 110, seconds: 3, db: -10 }));
-    const segments = bursts.map((burst) => ({ start: burst.at - 2, end: burst.at + 4, text: "oh my god that was insane" }));
+    const segments = bursts.map((burst) => ({
+      start: burst.at - 2,
+      end: burst.at + 4,
+      text: "oh my god that was insane",
+    }));
     const result = await run(segments, envelope(1800, bursts), 1800, options({ clipCount: null }));
     // 16 equally strong moments: auto fills its cap instead of stopping at a fixed default.
     expect(result.candidates.length).toBe(Math.ceil(1800 / 240));
@@ -282,15 +292,9 @@ describe("formatTranscript", () => {
       { start: 65, end: 68, text: "wait" },
     ];
     const text = formatTranscript(transcript(segments), envelope(80, [{ at: 5.5, seconds: 1, db: -16 }]));
-    expect(text.split("\n")).toEqual([
-      "[00:05.0 -> 00:07.5] oh my god (LOUD +14dB)",
-      "[01:05.0 -> 01:08.0] wait",
-    ]);
+    expect(text.split("\n")).toEqual(["[00:05.0 -> 00:07.5] oh my god (LOUD +14dB)", "[01:05.0 -> 01:08.0] wait"]);
 
-    const hours = formatTranscript(
-      transcript([{ start: 3661, end: 3663, text: "later" }]),
-      envelope(3663, []),
-    );
+    const hours = formatTranscript(transcript([{ start: 3661, end: 3663, text: "later" }]), envelope(3663, []));
     expect(hours.startsWith("[01:01:01.0 -> 01:01:03.0] later")).toBe(true);
   });
 

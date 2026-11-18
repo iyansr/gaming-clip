@@ -1,9 +1,11 @@
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+
 import type { Project, ProjectOptions, StageId } from "../shared/types";
 import { projectPaths } from "./config";
-import { busyElsewhere, clearBusy, ConflictError, listProjects, markBusy, NotFoundError, updateProject } from "./store";
 import { removeOutputs, renderProjectClip, resetStages, runPipeline, type PipelineOptions } from "./pipeline";
+import { getSettings } from "./settings";
+import { busyElsewhere, clearBusy, ConflictError, listProjects, markBusy, NotFoundError, updateProject } from "./store";
 
 interface Job {
   projectId: string;
@@ -17,10 +19,10 @@ interface Job {
 }
 
 /**
- * FIFO queue. Renders run up to MAX_RENDER_JOBS at a time (ffmpeg already uses several cores, so a few overlapping
- * encodes mostly hide the single-threaded caption/canvas work). A pipeline job (download, whisper) runs alone.
+ * FIFO queue. Renders run up to `renderJobs` (Settings) at a time, read when a job starts so a change applies to newly
+ * started jobs (ffmpeg already uses several cores, so a few overlapping encodes mostly hide the single-threaded
+ * caption/canvas work). A pipeline job (download, whisper) runs alone.
  */
-const MAX_RENDER_JOBS = Math.max(1, Number(process.env.GCLIP_RENDER_JOBS) || 2);
 const queue: Job[] = [];
 const running = new Set<Job>();
 
@@ -35,7 +37,10 @@ async function execute(job: Job): Promise<void> {
   } catch (error) {
     // Failures are already recorded in project.json by the pipeline / renderer; cancellations are expected.
     if (!job.controller.signal.aborted) {
-      console.error(`${job.kind} job for project ${job.projectId} failed:`, error instanceof Error ? error.message : error);
+      console.error(
+        `${job.kind} job for project ${job.projectId} failed:`,
+        error instanceof Error ? error.message : error,
+      );
     }
   } finally {
     running.delete(job);
@@ -48,7 +53,7 @@ function pump(): void {
   for (let next = queue[0]; next; next = queue[0]) {
     const alone = next.kind === "pipeline";
     const exclusive = [...running].some((job) => job.kind === "pipeline");
-    if (exclusive || (alone ? running.size > 0 : running.size >= MAX_RENDER_JOBS)) return;
+    if (exclusive || (alone ? running.size > 0 : running.size >= getSettings().values.renderJobs)) return;
     queue.shift();
     running.add(next);
     void execute(next);
@@ -65,7 +70,10 @@ function push(job: Job): Promise<void> {
 const reservedPipelines = new Set<string>();
 
 export function isPipelineActive(projectId: string): boolean {
-  return reservedPipelines.has(projectId) || [...running, ...queue].some((job) => job.projectId === projectId && job.kind === "pipeline");
+  return (
+    reservedPipelines.has(projectId) ||
+    [...running, ...queue].some((job) => job.projectId === projectId && job.kind === "pipeline")
+  );
 }
 
 /**
@@ -189,7 +197,9 @@ export async function recoverInterrupted(): Promise<void> {
   for (const project of await listProjects()) {
     if (busyElsewhere(project.id)) continue;
     const stagesRunning = Object.values(project.stages).some((stage) => stage.status === "running");
-    const clipsBusy = project.clips.some((clip) => clip.render.status === "queued" || clip.render.status === "rendering");
+    const clipsBusy = project.clips.some(
+      (clip) => clip.render.status === "queued" || clip.render.status === "rendering",
+    );
     if (clipsBusy) {
       // Partial renders from the killed process are never renamed into place.
       const { clipsDir } = projectPaths(project.id);
@@ -202,10 +212,12 @@ export async function recoverInterrupted(): Promise<void> {
     await updateProject(project.id, (p) => {
       for (const stage of Object.keys(p.stages) as StageId[]) {
         const state = p.stages[stage];
-        if (state.status === "running") p.stages[stage] = { status: "error", progress: state.progress, error: "Interrupted by restart" };
+        if (state.status === "running")
+          p.stages[stage] = { status: "error", progress: state.progress, error: "Interrupted by restart" };
       }
       for (const clip of p.clips) {
-        if (clip.render.status === "queued" || clip.render.status === "rendering") clip.render = { status: "idle", progress: 0 };
+        if (clip.render.status === "queued" || clip.render.status === "rendering")
+          clip.render = { status: "idle", progress: 0 };
       }
     });
   }

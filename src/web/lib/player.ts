@@ -12,8 +12,8 @@ export class Player {
   volume = 1;
   muted = false;
   error: string | null = null;
-  /** Called from the frame loop when something changed (playing, seeked, invalidated). */
-  draw: (() => void) | null = null;
+  /** Called from the frame loop when something changed (playing, seeked, invalidated). Set with `setDraw`. */
+  private draw: (() => void) | null = null;
 
   private range = { start: 0, end: 0 };
   private listeners = new Set<() => void>();
@@ -26,7 +26,15 @@ export class Player {
     v.playsInline = true;
     v.crossOrigin = "anonymous";
     v.setAttribute("aria-hidden", "true");
-    Object.assign(v.style, { position: "fixed", left: "0", top: "0", width: "2px", height: "2px", opacity: "0", pointerEvents: "none" });
+    Object.assign(v.style, {
+      position: "fixed",
+      left: "0",
+      top: "0",
+      width: "2px",
+      height: "2px",
+      opacity: "0",
+      pointerEvents: "none",
+    });
     v.src = src;
     document.body.appendChild(v);
     this.video = v;
@@ -123,6 +131,11 @@ export class Player {
       this.draw?.();
     }
   };
+
+  /** Registers (or clears) the callback the frame loop uses to repaint the preview. */
+  setDraw(draw: (() => void) | null) {
+    this.draw = draw;
+  }
 
   destroy() {
     cancelAnimationFrame(this.raf);

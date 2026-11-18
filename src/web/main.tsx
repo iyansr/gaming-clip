@@ -1,5 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+
+import { AppFooter } from "./components/AppFooter";
+import { SettingsProvider } from "./components/SettingsDialog";
 import { Link, usePath } from "./lib/router";
 import { ToastProvider } from "./lib/toast";
 import { HomePage } from "./pages/HomePage";
@@ -34,6 +37,19 @@ function Routes() {
     if (id) return <ProjectPage key={id} id={id} />;
   }
   return <NotFound />;
+}
+
+/** Pages scroll inside their own area so the footer below always stays visible. */
+function Shell() {
+  const path = usePath();
+  return (
+    <div className="flex h-full flex-col">
+      <div key={path} className="min-h-0 flex-1 overflow-y-auto">
+        <Routes />
+      </div>
+      <AppFooter />
+    </div>
+  );
 }
 
 /** Keeps a render crash from blanking the whole app. */
@@ -71,7 +87,9 @@ if (!root) throw new Error("#root missing");
 createRoot(root).render(
   <ErrorBoundary>
     <ToastProvider>
-      <Routes />
+      <SettingsProvider>
+        <Shell />
+      </SettingsProvider>
     </ToastProvider>
   </ErrorBoundary>,
 );

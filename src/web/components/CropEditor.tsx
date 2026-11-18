@@ -1,5 +1,6 @@
-import { useState } from "react";
 import { Crop, RotateCcw, ScanFace } from "lucide-react";
+import { useState } from "react";
+
 import type { Project, Rect } from "../../shared/types";
 import { clamp } from "../lib/format";
 import { FrameTime, Modal, RectFields, RectStage } from "./RectEditor";
@@ -30,8 +31,20 @@ export function CropEditor({
   const dirty = rect.x !== initial.x || rect.y !== initial.y || rect.w !== initial.w || rect.h !== initial.h;
 
   return (
-    <Modal titleId="crop-editor-title" icon={<Crop className="size-5 text-indigo-300" aria-hidden />} title={`Crop: ${title}`} onClose={onClose}>
-      <RectStage projectId={project.id} time={time} rect={rect} onChange={setRect} size={size} label={`${title} crop`} />
+    <Modal
+      titleId="crop-editor-title"
+      icon={<Crop className="size-5 text-indigo-300" aria-hidden />}
+      title={`Crop: ${title}`}
+      onClose={onClose}
+    >
+      <RectStage
+        projectId={project.id}
+        time={time}
+        rect={rect}
+        onChange={setRect}
+        size={size}
+        label={`${title} crop`}
+      />
       <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
         <RectFields rect={rect} onChange={setRect} size={size} />
         <FrameTime time={time} max={Math.max(0, source.duration - 0.5)} onChange={setTime} />

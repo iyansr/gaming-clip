@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+
 import { CAPTION_FONTS } from "../../shared/captions";
 import type { Clip, ClipSettings, ClipThumbnail, Project, Transcript, Word } from "../../shared/types";
 import { api, errorMessage, type ClipPatch } from "./api";
@@ -58,27 +59,27 @@ export function useProjectStream(id: string) {
   return { project, online, missing, applyProject };
 }
 
+const NO_WORDS = { words: [] as Word[], error: null };
+
 export function useTranscriptWords(projectId: string, transcribed: boolean): { words: Word[]; error: string | null } {
-  const [state, setState] = useState<{ words: Word[]; error: string | null }>({ words: [], error: null });
+  // The result remembers its project, so switching project reads as "empty" until the new transcript arrives.
+  const [result, setResult] = useState<{ projectId: string; words: Word[]; error: string | null } | null>(null);
   useEffect(() => {
-    if (!transcribed) {
-      setState({ words: [], error: null });
-      return;
-    }
+    if (!transcribed) return;
     let cancelled = false;
     api
       .transcript(projectId)
       .then((t: Transcript) => {
-        if (!cancelled) setState({ words: t.segments.flatMap((s) => s.words), error: null });
+        if (!cancelled) setResult({ projectId, words: t.segments.flatMap((s) => s.words), error: null });
       })
       .catch((e: unknown) => {
-        if (!cancelled) setState({ words: [], error: errorMessage(e) });
+        if (!cancelled) setResult({ projectId, words: [], error: errorMessage(e) });
       });
     return () => {
       cancelled = true;
     };
   }, [projectId, transcribed]);
-  return state;
+  return transcribed && result?.projectId === projectId ? result : NO_WORDS;
 }
 
 let fontsPromise: Promise<void> | null = null;
@@ -179,9 +180,14 @@ function splitEdit(edit: ClipEdit): ClipEdit[] {
  * Sends the whole patch in one request. When the server rejects it, retries each field group on its
  * own so one invalid field cannot take the others down; every rejection is reported.
  */
-async function patchGroups(projectId: string, clipId: string, patch: ClipEdit, report: (e: unknown) => void): Promise<Project> {
+async function patchGroups(
+  projectId: string,
+  clipId: string,
+  patch: ClipEdit,
+  report: (e: unknown) => void,
+): Promise<Project> {
   try {
-    return await api.patchClip(projectId, clipId, patch as ClipPatch);
+    return await api.patchClip(projectId, clipId, patch);
   } catch (first) {
     const groups = splitEdit(patch);
     if (groups.length < 2) {
@@ -190,7 +196,7 @@ async function patchGroups(projectId: string, clipId: string, patch: ClipEdit, r
     }
     for (const group of groups) {
       try {
-        await api.patchClip(projectId, clipId, group as ClipPatch);
+        await api.patchClip(projectId, clipId, group);
       } catch (e) {
         report(e);
       }
@@ -244,7 +250,10 @@ export function useClipEdits(project: Project, applyProject: (p: Project) => voi
   );
 
   const flushAll = useCallback(
-    () => Promise.all([...new Set([...dirty.current.keys(), ...inflight.current.keys()])].map((id) => flush(id))).then(() => undefined),
+    () =>
+      Promise.all([...new Set([...dirty.current.keys(), ...inflight.current.keys()])].map((id) => flush(id))).then(
+        () => undefined,
+      ),
     [flush],
   );
 
@@ -254,7 +263,11 @@ export function useClipEdits(project: Project, applyProject: (p: Project) => voi
       bump();
       window.clearTimeout(timers.current.get(clipId));
       if (immediate) void flush(clipId);
-      else timers.current.set(clipId, window.setTimeout(() => void flush(clipId), DEBOUNCE_MS));
+      else
+        timers.current.set(
+          clipId,
+          window.setTimeout(() => void flush(clipId), DEBOUNCE_MS),
+        );
     },
     [flush],
   );

@@ -1,4 +1,5 @@
 import { AlertCircle, CheckCircle2, Captions, ImageIcon, Loader2, Plus } from "lucide-react";
+
 import type { Clip, ClipSource, Project } from "../../shared/types";
 import { cn, fmtTime } from "../lib/format";
 import { Badge, Button, Empty, ProgressBar } from "./ui";
@@ -17,13 +18,28 @@ interface Props {
   onAdd: () => void;
 }
 
-const SOURCE_LABEL: Record<ClipSource, string> = { heuristic: "Heuristic", llm: "LLM", agent: "Agent", manual: "Manual" };
+const SOURCE_LABEL: Record<ClipSource, string> = {
+  heuristic: "Heuristic",
+  llm: "LLM",
+  agent: "Agent",
+  manual: "Manual",
+};
 
 export function sortClips(clips: Clip[], sort: ClipSort): Clip[] {
   return [...clips].sort((a, b) => (sort === "time" ? a.start - b.start : b.score - a.score || a.start - b.start));
 }
 
-export function ClipList({ project, clips, activeId, sort, onSortChange, onActivate, onSelect, onSelectAll, onAdd }: Props) {
+export function ClipList({
+  project,
+  clips,
+  activeId,
+  sort,
+  onSortChange,
+  onActivate,
+  onSelect,
+  onSelectAll,
+  onAdd,
+}: Props) {
   const sorted = sortClips(clips, sort);
   const selectedCount = clips.filter((c) => c.selected).length;
   const highlights = project.stages.highlights;
@@ -48,7 +64,12 @@ export function ClipList({ project, clips, activeId, sort, onSortChange, onActiv
           ))}
         </div>
         <span className="flex-1" />
-        <label className={cn("flex items-center gap-1.5 text-xs text-zinc-300", clips.length === 0 ? "cursor-not-allowed opacity-45" : "cursor-pointer")}>
+        <label
+          className={cn(
+            "flex items-center gap-1.5 text-xs text-zinc-300",
+            clips.length === 0 ? "cursor-not-allowed opacity-45" : "cursor-pointer",
+          )}
+        >
           <input
             type="checkbox"
             ref={(el) => {
@@ -95,7 +116,17 @@ export function ClipList({ project, clips, activeId, sort, onSortChange, onActiv
   );
 }
 
-function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: boolean; onActivate: () => void; onSelect: (v: boolean) => void }) {
+function ClipCard({
+  clip,
+  active,
+  onActivate,
+  onSelect,
+}: {
+  clip: Clip;
+  active: boolean;
+  onActivate: () => void;
+  onSelect: (v: boolean) => void;
+}) {
   const r = clip.render;
   return (
     <li
@@ -117,7 +148,9 @@ function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: 
         aria-current={active}
         className="flex w-full flex-col gap-1.5 rounded-lg py-2.5 pr-3 pl-9 text-left"
       >
-        <span className="line-clamp-2 text-sm leading-snug font-medium text-zinc-100">{clip.title || "Untitled clip"}</span>
+        <span className="line-clamp-2 text-sm leading-snug font-medium text-zinc-100">
+          {clip.title || "Untitled clip"}
+        </span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400 tabular-nums">
           <span className="text-zinc-200">
             {fmtTime(clip.start)} - {fmtTime(clip.end)}
@@ -130,8 +163,14 @@ function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: 
         </span>
         <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-400">
           <Badge>{clip.settings.layout}</Badge>
-          <span className="inline-flex items-center gap-1" title={clip.settings.subtitles ? `Captions: ${clip.settings.captionStyle}` : "No captions"}>
-            <Captions className={cn("size-3.5", clip.settings.subtitles ? "text-indigo-300" : "text-zinc-600")} aria-hidden />
+          <span
+            className="inline-flex items-center gap-1"
+            title={clip.settings.subtitles ? `Captions: ${clip.settings.captionStyle}` : "No captions"}
+          >
+            <Captions
+              className={cn("size-3.5", clip.settings.subtitles ? "text-indigo-300" : "text-zinc-600")}
+              aria-hidden
+            />
             {clip.settings.subtitles ? clip.settings.captionStyle : "off"}
           </span>
           {clip.thumbnail.file && (
@@ -155,7 +194,8 @@ function ClipCard({ clip, active, onActivate, onSelect }: { clip: Clip; active: 
         )}
         {r.status === "error" && (
           <span className="flex items-start gap-1.5 text-xs text-red-300">
-            <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden /> <span className="min-w-0 [overflow-wrap:anywhere]">Render failed: {r.error ?? "unknown error"}</span>
+            <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />{" "}
+            <span className="min-w-0 [overflow-wrap:anywhere]">Render failed: {r.error ?? "unknown error"}</span>
           </span>
         )}
       </button>

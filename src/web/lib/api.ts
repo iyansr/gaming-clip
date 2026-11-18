@@ -1,3 +1,4 @@
+import type { WhisperModelStatus } from "../../core/whisper-models";
 import type {
   ClipSettings,
   ClipThumbnail,
@@ -7,6 +8,7 @@ import type {
   StageId,
   Transcript,
 } from "../../shared/types";
+import type { SettingsPatch, SettingsResponse } from "./settings";
 
 export interface DepStatus {
   name: string;
@@ -97,15 +99,26 @@ export const api = {
   render: (id: string, clipIds?: string[]) => request<Project>("POST", `${projectUrl(id)}/render`, { clipIds }),
   thumbnailCandidates: (id: string, clipId: string) =>
     request<ThumbnailCandidate[]>("GET", `${projectUrl(id)}/clips/${clipId}/thumbnail/candidates`),
-  generateThumbnail: (id: string, clipId: string) => request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/thumbnail`, {}),
+  generateThumbnail: (id: string, clipId: string) =>
+    request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/thumbnail`, {}),
   cancelRender: (id: string) => request<Project>("POST", `${projectUrl(id)}/render/cancel`, {}),
+  settings: () => request<SettingsResponse>("GET", "/api/settings"),
+  patchSettings: (patch: SettingsPatch) => request<SettingsResponse>("PATCH", "/api/settings", patch),
+  testAi: () => request<{ ok: boolean; ms: number; error?: string }>("POST", "/api/settings/test-ai", {}),
+  whisperModels: () => request<WhisperModelStatus[]>("GET", "/api/settings/whisper-models"),
+  downloadWhisperModel: (name: string) =>
+    request<WhisperModelStatus[]>("POST", `/api/settings/whisper-models/${encodeURIComponent(name)}/download`, {}),
 };
 
 export const ASSET_TYPES = ["image/png", "image/jpeg", "image/webp"];
 export const MAX_ASSET_BYTES = 15 * 1024 * 1024;
 
 /** Uploads a background image as raw bytes (fetch has no upload progress, XHR does). */
-export function uploadAsset(projectId: string, file: File, onProgress: (fraction: number) => void): Promise<{ file: string }> {
+export function uploadAsset(
+  projectId: string,
+  file: File,
+  onProgress: (fraction: number) => void,
+): Promise<{ file: string }> {
   const { promise, resolve, reject } = Promise.withResolvers<{ file: string }>();
   const xhr = new XMLHttpRequest();
   xhr.open("POST", `${projectUrl(projectId)}/assets`);
@@ -123,7 +136,8 @@ export function uploadAsset(projectId: string, file: File, onProgress: (fraction
     }
     const body = typeof data === "object" && data !== null ? (data as { error?: unknown; file?: unknown }) : {};
     if (xhr.status >= 200 && xhr.status < 300 && typeof body.file === "string") resolve({ file: body.file });
-    else reject(new ApiError(typeof body.error === "string" ? body.error : `${xhr.status} ${xhr.statusText}`, xhr.status));
+    else
+      reject(new ApiError(typeof body.error === "string" ? body.error : `${xhr.status} ${xhr.statusText}`, xhr.status));
   };
   xhr.send(file);
   return promise;

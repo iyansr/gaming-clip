@@ -1,6 +1,6 @@
 import type { HighlightEngine, LoudnessEnvelope, ProjectOptions, Segment, Transcript } from "../shared/types";
-import { llmConfigured } from "./config";
 import { chatJson, type ChatMessage } from "./llm";
+import { llmConfigured } from "./settings";
 
 export interface HighlightCandidate {
   start: number;
@@ -139,7 +139,10 @@ function median(values: number[]): number {
 }
 
 function wordCount(text: string): number {
-  const words = text.trim().split(/\s+/).filter((word) => /[\p{L}\p{N}]/u.test(word));
+  const words = text
+    .trim()
+    .split(/\s+/)
+    .filter((word) => /[\p{L}\p{N}]/u.test(word));
   return words.length;
 }
 
@@ -215,7 +218,9 @@ function buildTimeline(transcript: Transcript, loudness: LoudnessEnvelope, durat
     }
   }
 
-  const medianWps = median(transcript.segments.map((segment) => wordCount(segment.text) / Math.max(0.1, segment.end - segment.start)));
+  const medianWps = median(
+    transcript.segments.map((segment) => wordCount(segment.text) / Math.max(0.1, segment.end - segment.start)),
+  );
   const keywordAt = new Array<number>(n).fill(0);
   const punctAt = new Array<number>(n).fill(0);
   const laughAt = new Array<number>(n).fill(0);
@@ -256,7 +261,21 @@ function buildTimeline(transcript: Transcript, loudness: LoudnessEnvelope, durat
     excite[t] = sum / (to - from + 1);
   }
 
-  return { duration, n, db, baseline, loudAt, burstAt, punctAt, laughAt, rateAt, phraseAt, excite, medianWps, segments: transcript.segments };
+  return {
+    duration,
+    n,
+    db,
+    baseline,
+    loudAt,
+    burstAt,
+    punctAt,
+    laughAt,
+    rateAt,
+    phraseAt,
+    excite,
+    medianWps,
+    segments: transcript.segments,
+  };
 }
 
 function meanExcite(timeline: Timeline, start: number, end: number): number {
@@ -326,7 +345,13 @@ function rawWindow(peakIndex: number, timeline: Timeline, options: ProjectOption
 }
 
 /** Snap to nearby segment boundaries, then clamp to the video and re-enforce min/max length. */
-function snapWindow(start: number, end: number, segments: Segment[], duration: number, options: ProjectOptions): { start: number; end: number } {
+function snapWindow(
+  start: number,
+  end: number,
+  segments: Segment[],
+  duration: number,
+  options: ProjectOptions,
+): { start: number; end: number } {
   let s = start;
   let e = end;
   let snappedStart: number | null = null;
@@ -384,7 +409,12 @@ function selectNonOverlapping<T extends { start: number; end: number; score: num
   return kept;
 }
 
-function windowsForPeaks(peaks: { index: number; value: number }[], timeline: Timeline, options: ProjectOptions, segments: Segment[]): Window[] {
+function windowsForPeaks(
+  peaks: { index: number; value: number }[],
+  timeline: Timeline,
+  options: ProjectOptions,
+  segments: Segment[],
+): Window[] {
   const windows: Window[] = [];
   for (const peak of peaks) {
     const base = rawWindow(peak.index, timeline, options);
@@ -430,7 +460,13 @@ function distanceToSegment(segment: Segment, time: number): number {
   return 0;
 }
 
-function pickSegmentText(segments: Segment[], start: number, end: number, peakTime: number, medianWps: number): string | null {
+function pickSegmentText(
+  segments: Segment[],
+  start: number,
+  end: number,
+  peakTime: number,
+  medianWps: number,
+): string | null {
   let best: Segment | null = null;
   let bestRichness = -1;
   let bestDistance = Infinity;
@@ -478,7 +514,11 @@ function autoClipCap(duration: number): number {
 }
 
 /** Auto mode: every window that clears `minScore`, best first, until the cap. */
-function selectQuality<T extends { start: number; end: number; score: number }>(items: T[], cap: number, minScore: number): T[] {
+function selectQuality<T extends { start: number; end: number; score: number }>(
+  items: T[],
+  cap: number,
+  minScore: number,
+): T[] {
   const sorted = [...items].sort((a, b) => b.score - a.score);
   const kept: T[] = [];
   for (const item of sorted) {
@@ -590,7 +630,9 @@ export function formatTranscript(
       if (label) lines.push(`[${formatTime(cursor)} -> ${formatTime(segment.start)}] (no speech, ${label})`);
     }
     const label = loudLabel(segment.start, segment.end);
-    lines.push(`[${formatTime(segment.start)} -> ${formatTime(segment.end)}] ${segment.text.trim()}${label ? ` (${label})` : ""}`);
+    lines.push(
+      `[${formatTime(segment.start)} -> ${formatTime(segment.end)}] ${segment.text.trim()}${label ? ` (${label})` : ""}`,
+    );
     cursor = Math.max(cursor, segment.end);
   }
   if (endBound - cursor > 5) {
@@ -636,7 +678,10 @@ function parseTimeValue(value: unknown): number | null {
  * Validate raw JSON from the LLM: finite times inside the video, sane lengths, trimmed strings.
  * Invalid entries are dropped instead of throwing.
  */
-export function parseLlmClips(raw: unknown, ctx: { duration: number; options: ProjectOptions; transcript: Transcript }): HighlightCandidate[] {
+export function parseLlmClips(
+  raw: unknown,
+  ctx: { duration: number; options: ProjectOptions; transcript: Transcript },
+): HighlightCandidate[] {
   const list = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.clips) ? raw.clips : [];
   const candidates: HighlightCandidate[] = [];
   for (const entry of list) {
@@ -755,7 +800,13 @@ const LLM_SYSTEM: ChatMessage = {
     "You are an expert short-form video editor working on gaming videos. You pick moments for vertical 1080x1920 shorts. Reply with one JSON object only, no prose.",
 };
 
-function llmPrompt(title: string, transcript: Transcript, options: ProjectOptions, chunk: TranscriptChunk, target: number | null): string {
+function llmPrompt(
+  title: string,
+  transcript: Transcript,
+  options: ProjectOptions,
+  chunk: TranscriptChunk,
+  target: number | null,
+): string {
   const countLine =
     target === null
       ? [
@@ -803,10 +854,20 @@ async function llmHighlights(
       const index = next++;
       if (index >= chunks.length) return;
       const raw = await chatJson(
-        [LLM_SYSTEM, { role: "user", content: llmPrompt(input.title, input.transcript, input.options, chunks[index]!, targets?.[index] ?? null) }],
+        [
+          LLM_SYSTEM,
+          {
+            role: "user",
+            content: llmPrompt(input.title, input.transcript, input.options, chunks[index]!, targets?.[index] ?? null),
+          },
+        ],
         signal,
       );
-      answers[index] = parseLlmClips(raw, { duration: input.duration, options: input.options, transcript: input.transcript });
+      answers[index] = parseLlmClips(raw, {
+        duration: input.duration,
+        options: input.options,
+        transcript: input.transcript,
+      });
       done += 1;
       onProgress((done / chunks.length) * 0.9);
     }
@@ -823,7 +884,9 @@ async function llmHighlights(
   const heuristicWindows = windowsForPeaks(findPeaks(timeline), timeline, input.options, input.transcript.segments);
   const bestRaw = heuristicWindows.reduce((max, window) => Math.max(max, window.raw), 0);
   const scored = parsed.map((candidate) => {
-    const raw = 0.6 * peakExcite(timeline, candidate.start, candidate.end) + 0.4 * meanExcite(timeline, candidate.start, candidate.end);
+    const raw =
+      0.6 * peakExcite(timeline, candidate.start, candidate.end) +
+      0.4 * meanExcite(timeline, candidate.start, candidate.end);
     const heuristicScore =
       bestRaw > 0
         ? clamp(Math.round((raw / bestRaw) * 95), 0, 100)

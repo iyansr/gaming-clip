@@ -1,4 +1,4 @@
-import { drawCamBorder, drawCamMask, type ComposeContext } from "../../shared/compose";
+import { drawCamBorder, drawCamMask } from "../../shared/compose";
 import type { FrameLayout, LayoutLayer } from "../../shared/layout";
 import type { Rect, Size } from "../../shared/types";
 
@@ -26,7 +26,13 @@ export class LayoutPainter {
   private readonly maskCtx = context2d(this.mask);
   private maskKey = "";
 
-  paint(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, layout: FrameLayout, image: HTMLImageElement | null, output: Size): void {
+  paint(
+    ctx: CanvasRenderingContext2D,
+    video: HTMLVideoElement,
+    layout: FrameLayout,
+    image: HTMLImageElement | null,
+    output: Size,
+  ): void {
     ctx.fillStyle = layout.fill;
     ctx.fillRect(0, 0, output.width, output.height);
     if (image) {
@@ -55,7 +61,13 @@ export class LayoutPainter {
     }
   }
 
-  private paintCam(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, src: Rect, dst: Rect, style: NonNullable<LayoutLayer["cam"]>): void {
+  private paintCam(
+    ctx: CanvasRenderingContext2D,
+    video: HTMLVideoElement,
+    src: Rect,
+    dst: Rect,
+    style: NonNullable<LayoutLayer["cam"]>,
+  ): void {
     const w = Math.round(dst.w);
     const h = Math.round(dst.h);
     if (w < 1 || h < 1) return;
@@ -81,7 +93,7 @@ export class LayoutPainter {
     if (style.border > 0) {
       ctx.save();
       ctx.translate(dst.x, dst.y);
-      drawCamBorder(ctx as ComposeContext, w, h, style);
+      drawCamBorder(ctx, w, h, style);
       ctx.restore();
     }
   }

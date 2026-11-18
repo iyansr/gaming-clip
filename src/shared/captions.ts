@@ -473,7 +473,7 @@ export function drawCaptions(
       return (rtl ? [...line].reverse() : line).map((i) => {
         const cx = x + widths[i]! / 2;
         x += widths[i]! + space;
-        return { i, cx, cy: (row - (lines!.length - 1) / 2) * pitch };
+        return { i, cx, cy: (row - (lines.length - 1) / 2) * pitch };
       });
     });
     // Active word last so its pop overlaps neighbours instead of being overdrawn.

@@ -1,5 +1,12 @@
 import { defaultCustomLayout } from "../../shared/layout";
-import { OUTPUT_SIZE, type CamElement, type CustomLayout, type LayoutElement, type Rect, type Size } from "../../shared/types";
+import {
+  OUTPUT_SIZE,
+  type CamElement,
+  type CustomLayout,
+  type LayoutElement,
+  type Rect,
+  type Size,
+} from "../../shared/types";
 import type { Edge } from "../components/RectEditor";
 import { clamp } from "./format";
 
@@ -21,9 +28,15 @@ export const SNAP_PX = 12;
 export const MAX_FEATHER = 150;
 export const MAX_BORDER = 20;
 
-export const CAM_STYLE: Pick<CamElement, "feather" | "radius" | "border" | "borderColor"> = { feather: 0, radius: 0, border: 0, borderColor: "#ffffff" };
+export const CAM_STYLE: Pick<CamElement, "feather" | "radius" | "border" | "borderColor"> = {
+  feather: 0,
+  radius: 0,
+  border: 0,
+  borderColor: "#ffffff",
+};
 
-export const resolveCustom = (source: Size, webcam: Rect | null, custom: CustomLayout | null): CustomLayout => custom ?? defaultCustomLayout(source, webcam, OUTPUT_SIZE);
+export const resolveCustom = (source: Size, webcam: Rect | null, custom: CustomLayout | null): CustomLayout =>
+  custom ?? defaultCustomLayout(source, webcam, OUTPUT_SIZE);
 
 /** Largest rect of aspect `aspect` (w/h) inside `box`, centred. */
 export function fitAspect(box: Rect, aspect: number): Rect {
@@ -46,15 +59,31 @@ export function defaultElement(role: ElementRole, source: Size, webcam: Rect | n
   if (role === "game") {
     if (base.game) return base.game;
     const w = Math.min(source.width, Math.floor((source.height * OUTPUT_SIZE.width) / OUTPUT_SIZE.height / 2) * 2);
-    return { src: { x: Math.floor((source.width - w) / 4) * 2, y: 0, w, h: source.height }, dst: { x: 0, y: 0, w: OUTPUT_SIZE.width, h: OUTPUT_SIZE.height } };
+    return {
+      src: { x: Math.floor((source.width - w) / 4) * 2, y: 0, w, h: source.height },
+      dst: { x: 0, y: 0, w: OUTPUT_SIZE.width, h: OUTPUT_SIZE.height },
+    };
   }
   if (base.cam) return base.cam;
-  const src: Rect = webcam ?? { x: 0, y: 0, w: Math.round(source.width * 0.25), h: Math.round(source.width * 0.25 * (source.height / source.width)) };
+  const src: Rect = webcam ?? {
+    x: 0,
+    y: 0,
+    w: Math.round(source.width * 0.25),
+    h: Math.round(source.width * 0.25 * (source.height / source.width)),
+  };
   const w = Math.round(OUTPUT_SIZE.width * 0.5);
-  return { src, dst: { x: Math.round((OUTPUT_SIZE.width - w) / 2), y: 40, w, h: Math.round((w * src.h) / src.w) }, ...CAM_STYLE };
+  return {
+    src,
+    dst: { x: Math.round((OUTPUT_SIZE.width - w) / 2), y: 40, w, h: Math.round((w * src.h) / src.w) },
+    ...CAM_STYLE,
+  };
 }
 
-export function withElement(custom: CustomLayout, role: ElementRole, element: LayoutElement | CamElement | null): CustomLayout {
+export function withElement(
+  custom: CustomLayout,
+  role: ElementRole,
+  element: LayoutElement | CamElement | null,
+): CustomLayout {
   return { ...custom, [role]: element };
 }
 
@@ -102,7 +131,9 @@ function nearest(values: number[], targets: number[], threshold: number): number
 
 /** Targets the box currently sits on (within half a pixel): the lines to draw while dragging. */
 function guidesFor(r: Rect, targets: SnapTargets): Guides {
-  const hit = (values: number[], list: number[]) => [...new Set(list.filter((t) => values.some((v) => Math.abs(v - t) < 0.5)))];
+  const hit = (values: number[], list: number[]) => [
+    ...new Set(list.filter((t) => values.some((v) => Math.abs(v - t) < 0.5))),
+  ];
   return { x: hit([r.x, r.x + r.w / 2, r.x + r.w], targets.x), y: hit([r.y, r.y + r.h / 2, r.y + r.h], targets.y) };
 }
 
@@ -127,7 +158,14 @@ export function moveRect(start: Rect, dx: number, dy: number, o: SnapOptions): {
  * Resizes `start` by dragging `edges` by (dx, dy). With `aspect` (w/h) the box keeps that ratio:
  * corners anchor the opposite corner, edge handles anchor the opposite edge and grow around the centre of the other axis.
  */
-export function resizeRect(start: Rect, edges: Edge[], dx: number, dy: number, aspect: number | null, o: SnapOptions): { rect: Rect; guides: Guides } {
+export function resizeRect(
+  start: Rect,
+  edges: Edge[],
+  dx: number,
+  dy: number,
+  aspect: number | null,
+  o: SnapOptions,
+): { rect: Rect; guides: Guides } {
   const sx = edges.includes("e") ? 1 : edges.includes("w") ? -1 : 0;
   const sy = edges.includes("s") ? 1 : edges.includes("n") ? -1 : 0;
   let rect: Rect;
@@ -166,8 +204,10 @@ export function resizeRect(start: Rect, edges: Edge[], dx: number, dy: number, a
     else w = (start.h + sy * dy) * aspect;
     w = Math.max(w, MIN_DST, MIN_DST * aspect);
 
-    const anchorX = (width: number) => (sx > 0 ? start.x : sx < 0 ? start.x + start.w - width : start.x + (start.w - width) / 2);
-    const anchorY = (height: number) => (sy > 0 ? start.y : sy < 0 ? start.y + start.h - height : start.y + (start.h - height) / 2);
+    const anchorX = (width: number) =>
+      sx > 0 ? start.x : sx < 0 ? start.x + start.w - width : start.x + (start.w - width) / 2;
+    const anchorY = (height: number) =>
+      sy > 0 ? start.y : sy < 0 ? start.y + start.h - height : start.y + (start.h - height) / 2;
 
     if (o.snap) {
       // Correction in width terms, from whichever moving edge is closest to a target.

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+
 import { media } from "./api";
 
 /** Decoded images by URL: a background is loaded once and then shared by the preview, the thumbnail canvas and the tiles. */

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
+
 import { buildCues, CAPTION_STYLES, drawCaptions, type CaptionCue } from "../../shared/captions";
 import type { Word } from "../../shared/types";
 import { cn } from "../lib/format";
@@ -13,7 +14,19 @@ const SAMPLE: Word[] = [
 /** In the middle word, past the pop animation. */
 const SAMPLE_TIME = 0.8;
 
-function Tile({ styleId, selected, fontsReady, onSelect, disabled }: { styleId: string; selected: boolean; fontsReady: boolean; onSelect: () => void; disabled: boolean }) {
+function Tile({
+  styleId,
+  selected,
+  fontsReady,
+  onSelect,
+  disabled,
+}: {
+  styleId: string;
+  selected: boolean;
+  fontsReady: boolean;
+  onSelect: () => void;
+  disabled: boolean;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   const cues = useMemo<CaptionCue[]>(() => buildCues(SAMPLE, 0, 2, styleId), [styleId]);
 
@@ -25,7 +38,12 @@ function Tile({ styleId, selected, fontsReady, onSelect, disabled }: { styleId: 
     grad.addColorStop(1, "#1f2430");
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, TILE.width, TILE.height);
-    if (fontsReady) drawCaptions(ctx, cues, SAMPLE_TIME, styleId, { width: TILE.width, height: TILE.height, centerY: TILE.height / 2 });
+    if (fontsReady)
+      drawCaptions(ctx, cues, SAMPLE_TIME, styleId, {
+        width: TILE.width,
+        height: TILE.height,
+        centerY: TILE.height / 2,
+      });
   }, [cues, styleId, fontsReady]);
 
   const name = CAPTION_STYLES.find((s) => s.id === styleId)?.name ?? styleId;
@@ -42,16 +60,35 @@ function Tile({ styleId, selected, fontsReady, onSelect, disabled }: { styleId: 
       )}
     >
       <canvas ref={ref} width={TILE.width} height={TILE.height} className="block aspect-[27/10] w-full" />
-      <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 text-[10px] leading-4 font-medium text-zinc-100">{name}</span>
+      <span className="absolute bottom-1 left-1 rounded bg-black/70 px-1.5 text-[10px] leading-4 font-medium text-zinc-100">
+        {name}
+      </span>
     </button>
   );
 }
 
-export function CaptionGallery({ value, onChange, fontsReady, disabled }: { value: string; onChange: (id: string) => void; fontsReady: boolean; disabled: boolean }) {
+export function CaptionGallery({
+  value,
+  onChange,
+  fontsReady,
+  disabled,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  fontsReady: boolean;
+  disabled: boolean;
+}) {
   return (
     <div className="grid grid-cols-2 gap-2">
       {CAPTION_STYLES.map((s) => (
-        <Tile key={s.id} styleId={s.id} selected={s.id === value} fontsReady={fontsReady} onSelect={() => onChange(s.id)} disabled={disabled} />
+        <Tile
+          key={s.id}
+          styleId={s.id}
+          selected={s.id === value}
+          fontsReady={fontsReady}
+          onSelect={() => onChange(s.id)}
+          disabled={disabled}
+        />
       ))}
     </div>
   );

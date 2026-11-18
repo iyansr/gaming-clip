@@ -1,11 +1,21 @@
 import { mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
+
 import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
-import { activeCue, buildCues, CAPTION_FONTS, drawCaptions, getCaptionStyle, type CaptionCue } from "../shared/captions";
+
+import {
+  activeCue,
+  buildCues,
+  CAPTION_FONTS,
+  drawCaptions,
+  getCaptionStyle,
+  type CaptionCue,
+} from "../shared/captions";
 import { drawCamBorder, drawCamMask, type ComposeContext } from "../shared/compose";
 import { computeLayout, type LayoutLayer } from "../shared/layout";
 import { OUTPUT_SIZE, type ClipSettings, type Rect, type Word } from "../shared/types";
 import { BIN, FONTS_DIR } from "./config";
+import { videoEncoderArgs } from "./encoder";
 import { ExecError } from "./exec";
 
 export interface RenderJob {
@@ -120,7 +130,14 @@ function placeLayers(layers: LayoutLayer[], source: { width: number; height: num
 /** `#rgb` / `#rrggbb` as an ffmpeg colour. */
 function ffColor(color: string): string {
   const hex = color.slice(1);
-  return `0x${hex.length === 3 ? [...hex].map((digit) => digit + digit).join("") : hex}`;
+  return `0x${
+    hex.length === 3
+      ? hex
+          .split("")
+          .map((digit) => digit + digit)
+          .join("")
+      : hex
+  }`;
 }
 
 /** Draws a webcam PNG (mask or border) for the visible part of a layer's `dst`. */
@@ -140,14 +157,20 @@ async function writeCamImage(
 
 /** Placement of the layout's layers plus the temporary images they need; every file written is listed in `scratch`. */
 async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Promise<GraphPlan> {
-  const layout = computeLayout({ width: job.source.width, height: job.source.height }, job.webcam, job.settings, OUTPUT_SIZE);
+  const layout = computeLayout(
+    { width: job.source.width, height: job.source.height },
+    job.webcam,
+    job.settings,
+    OUTPUT_SIZE,
+  );
   const layers = placeLayers(layout.layers, job.source);
   const stem = tmpPath.slice(0, tmpPath.length - extname(tmpPath).length);
   let imageFile: string | null = null;
   if (layout.image) {
     if (!job.assetsDir) throw new Error("The layout has a background image but the render job has no assets directory");
     imageFile = join(job.assetsDir, basename(layout.image));
-    if (!(await Bun.file(imageFile).exists())) throw new Error(`Background image ${layout.image} is missing from the project assets`);
+    if (!(await Bun.file(imageFile).exists()))
+      throw new Error(`Background image ${layout.image} is missing from the project assets`);
   }
   for (const [i, placed] of layers.entries()) {
     const style = placed.layer.cam;
@@ -193,7 +216,10 @@ function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captio
     const scaling = layer.blur
       ? `scale=${evenAtLeast2(dst.w / BLUR_DOWNSCALE)}:${evenAtLeast2(dst.h / BLUR_DOWNSCALE)},gblur=sigma=${BLUR_SIGMA},scale=${dst.w}:${dst.h}`
       : `scale=${dst.w}:${dst.h}:flags=lanczos`;
-    const inside = visible.w === dst.w && visible.h === dst.h ? "" : `,crop=${visible.w}:${visible.h}:${visible.x - dst.x}:${visible.y - dst.y}`;
+    const inside =
+      visible.w === dst.w && visible.h === dst.h
+        ? ""
+        : `,crop=${visible.w}:${visible.h}:${visible.x - dst.x}:${visible.y - dst.y}`;
     chains.push(`[s${i}]${crop},${scaling}${inside}[${maskFile ? `u${i}` : `l${i}`}]`);
     if (maskFile) {
       chains.push(`[${inputOf(maskFile)}:v]format=rgba,alphaextract[m${i}]`);
@@ -203,7 +229,11 @@ function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captio
 
   const first = layers[0];
   const coversFrame =
-    first !== undefined && plan.imageFile === null && !first.maskFile && first.visible.w === OUT_W && first.visible.h === OUT_H;
+    first !== undefined &&
+    plan.imageFile === null &&
+    !first.maskFile &&
+    first.visible.w === OUT_W &&
+    first.visible.h === OUT_H;
   let acc = "[l0]";
   if (!coversFrame) {
     // The color source is BT.601; go through RGB so the base matches the BT.709 of the rest of the frame.
@@ -273,6 +303,7 @@ async function encode(
   onProgress: (progress: number) => void,
   signal?: AbortSignal,
 ): Promise<void> {
+  const videoArgs = await videoEncoderArgs();
   const duration = job.end - job.start;
   const fps = frameRate(job.source.fps);
 
@@ -283,22 +314,55 @@ async function encode(
       : null;
 
   const args = [
-    "-y", "-hide_banner", "-loglevel", "error",
-    "-ss", job.start.toFixed(3), "-t", duration.toFixed(3), "-i", job.sourcePath,
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-ss",
+    job.start.toFixed(3),
+    "-t",
+    duration.toFixed(3),
+    "-i",
+    job.sourcePath,
   ];
   if (strip) {
-    args.push("-f", "rawvideo", "-pix_fmt", "rgba", "-video_size", `${OUT_W}x${STRIP_H}`, "-framerate", fps.arg, "-i", "pipe:0");
+    args.push(
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "rgba",
+      "-video_size",
+      `${OUT_W}x${STRIP_H}`,
+      "-framerate",
+      fps.arg,
+      "-i",
+      "pipe:0",
+    );
   }
   // Stills (background image, webcam masks and borders) loop for the whole clip.
-  for (const file of extraFiles(plan)) args.push("-loop", "1", "-framerate", fps.arg, "-t", duration.toFixed(3), "-i", file);
+  for (const file of extraFiles(plan))
+    args.push("-loop", "1", "-framerate", fps.arg, "-t", duration.toFixed(3), "-i", file);
   args.push(
-    "-filter_complex", buildFilterGraph(plan, fps.arg, duration, strip),
-    "-map", "[vout]", "-map", "0:a:0?",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-b:a", "160k",
-    "-movflags", "+faststart",
-    "-t", duration.toFixed(3),
-    "-progress", "pipe:1", "-nostats",
+    "-filter_complex",
+    buildFilterGraph(plan, fps.arg, duration, strip),
+    "-map",
+    "[vout]",
+    "-map",
+    "0:a:0?",
+    ...videoArgs,
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "160k",
+    "-movflags",
+    "+faststart",
+    "-t",
+    duration.toFixed(3),
+    "-progress",
+    "pipe:1",
+    "-nostats",
     tmpPath,
   );
 
@@ -335,7 +399,8 @@ async function encode(
           const { data } = ctx.getImageData(0, 0, OUT_W, STRIP_H);
           rgba = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
         }
-        sink.write(rgba);
+        // Buffered write; the flush below applies the backpressure and surfaces a broken pipe.
+        void sink.write(rgba);
         await Promise.race([sink.flush(), proc.exited]);
       }
       await Promise.race([sink.end(), proc.exited]);
@@ -368,14 +433,21 @@ async function encode(
  * Render one clip to `job.outPath`: reframe to 1080x1920 per computeLayout, burn captions (drawn with
  * @napi-rs/canvas and piped to ffmpeg as raw RGBA, since this ffmpeg build has no subtitle/drawtext filters).
  */
-export async function renderClip(job: RenderJob, onProgress: (progress: number) => void, signal?: AbortSignal): Promise<void> {
+export async function renderClip(
+  job: RenderJob,
+  onProgress: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
   validate(job);
   signal?.throwIfAborted();
   const cues = job.settings.subtitles ? buildCues(job.words, job.start, job.end, job.settings.captionStyle) : [];
 
   await mkdir(dirname(job.outPath), { recursive: true });
   const ext = extname(job.outPath) || ".mp4";
-  const tmpPath = join(dirname(job.outPath), `.${basename(job.outPath, ext)}.${crypto.randomUUID().slice(0, 8)}.partial${ext}`);
+  const tmpPath = join(
+    dirname(job.outPath),
+    `.${basename(job.outPath, ext)}.${crypto.randomUUID().slice(0, 8)}.partial${ext}`,
+  );
   const scratch: string[] = [];
   try {
     const plan = await planGraph(job, tmpPath, scratch);

@@ -24,7 +24,7 @@ function readWavInfo(bytes: Uint8Array): WavInfo {
   let blockAlign = 0;
   let dataOffset = -1;
   let dataLength = 0;
-  for (let offset = 12; offset + 8 <= bytes.byteLength; ) {
+  for (let offset = 12; offset + 8 <= bytes.byteLength;) {
     const id = ascii(offset);
     const size = view.getUint32(offset + 4, true);
     const body = offset + 8;

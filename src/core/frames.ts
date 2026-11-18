@@ -33,12 +33,18 @@ export async function grabFrame(
   const { width, height, format } = opts;
   const out = await ffmpegStdout(
     [
-      "-ss", t.toFixed(3),
-      "-i", videoPath,
-      "-frames:v", "1",
-      "-vf", `scale=${width}:${height}`,
-      "-f", "rawvideo",
-      "-pix_fmt", format,
+      "-ss",
+      t.toFixed(3),
+      "-i",
+      videoPath,
+      "-frames:v",
+      "1",
+      "-vf",
+      `scale=${width}:${height}`,
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      format,
       "-",
     ],
     signal,
@@ -53,13 +59,20 @@ export async function grabFrame(
 /** JPEG bytes of the frame at t, scaled down to maxWidth (never up) keeping aspect, with even dimensions. */
 export async function grabJpeg(videoPath: string, t: number, maxWidth = 960): Promise<Uint8Array> {
   const out = await ffmpegStdout([
-    "-ss", t.toFixed(3),
-    "-i", videoPath,
-    "-frames:v", "1",
-    "-vf", `scale='min(${Math.max(2, Math.floor(maxWidth / 2) * 2)},trunc(iw/2)*2)':-2`,
-    "-f", "image2pipe",
-    "-c:v", "mjpeg",
-    "-q:v", "4",
+    "-ss",
+    t.toFixed(3),
+    "-i",
+    videoPath,
+    "-frames:v",
+    "1",
+    "-vf",
+    `scale='min(${Math.max(2, Math.floor(maxWidth / 2) * 2)},trunc(iw/2)*2)':-2`,
+    "-f",
+    "image2pipe",
+    "-c:v",
+    "mjpeg",
+    "-q:v",
+    "4",
     "-",
   ]);
   if (out.length === 0) throw new Error(`No frame at t=${t.toFixed(2)}s in ${videoPath}`);

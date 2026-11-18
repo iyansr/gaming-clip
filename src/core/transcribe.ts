@@ -1,9 +1,11 @@
 import { mkdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+
 import type { Segment, Transcript, Word } from "../shared/types";
 import { loudnessEnvelope } from "./audio";
-import { BIN, MODELS, WHISPER_MODEL } from "./config";
+import { BIN, whisperModelFile } from "./config";
 import { run } from "./exec";
+import { getSettings } from "./settings";
 
 const MIN_WORD_SECONDS = 0.05;
 /** `[_BEG_]`, `[_TT_123]`, ... — decoder control tokens, not words. */
@@ -121,7 +123,7 @@ function dtwPreset(model: string): string {
   const preset = name.startsWith("large") ? name.replaceAll("-", ".") : name;
   if (!DTW_PRESETS.includes(preset)) {
     throw new Error(
-      `No whisper.cpp DTW alignment preset for model "${model}" (word timestamps need one of: ${DTW_PRESETS.join(", ")}). Set WHISPER_MODEL to a supported model.`,
+      `No whisper.cpp DTW alignment preset for model "${model}" (word timestamps need one of: ${DTW_PRESETS.join(", ")}). Choose a supported model in Settings.`,
     );
   }
   return preset;
@@ -158,9 +160,7 @@ function wordsFromTokens(tokens: RawToken[], noSpaces: boolean): TimedWord[] {
     prefix = "";
   }
   if (current) words.push(current);
-  return words
-    .map((word) => ({ ...word, text: word.text.trim() }))
-    .filter((word) => word.text.length > 0);
+  return words.map((word) => ({ ...word, text: word.text.trim() })).filter((word) => word.text.length > 0);
 }
 
 /**
@@ -201,7 +201,8 @@ function placeWords(timed: TimedWord[][], rms: number[]): Word[][] {
   return timed.map((segment) =>
     segment.map((word) => {
       const end = Math.max(word.end ?? previousEnd, previousEnd + MIN_WORD_SECONDS);
-      const longest = WORD_BASE_SECONDS + WORD_PER_CHAR_SECONDS * [...word.text].length;
+      // Code points (not UTF-16 units): one emoji or accented glyph is one character of speaking time.
+      const longest = WORD_BASE_SECONDS + WORD_PER_CHAR_SECONDS * Array.from(word.text).length;
       const capped = Math.max(previousEnd, end - longest);
       const start = Math.min(acousticOnset(rms, capped, end), end - MIN_WORD_SECONDS);
       previousEnd = end;
@@ -248,11 +249,9 @@ function sentenceSegments(words: Word[], noSpaces: boolean): Segment[] {
 
 /** 16 kHz mono s16le WAV. */
 export async function extractAudio(videoPath: string, wavPath: string, signal?: AbortSignal): Promise<void> {
-  await run(
-    BIN.ffmpeg,
-    ["-y", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
-    { signal },
-  );
+  await run(BIN.ffmpeg, ["-y", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath], {
+    signal,
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -309,7 +308,7 @@ async function wavLayout(wavPath: string): Promise<WavLayout> {
   let blockAlign = 0;
   let dataOffset = -1;
   let dataLength = 0;
-  for (let offset = 12; offset + 8 <= header.byteLength; ) {
+  for (let offset = 12; offset + 8 <= header.byteLength;) {
     const id = ascii(offset);
     const size = view.getUint32(offset + 4, true);
     const body = offset + 8;
@@ -388,7 +387,7 @@ async function planChunks(wavPath: string, layout: WavLayout): Promise<ChunkRang
  */
 async function decodeChunk(
   wavPath: string,
-  opts: { language: string; duration: number },
+  opts: { language: string; duration: number; model: string },
   onProgress: (fraction: number) => void,
   signal?: AbortSignal,
 ): Promise<DecodedChunk> {
@@ -396,8 +395,22 @@ async function decodeChunk(
   const jsonPath = `${whisperBase}.json`;
   // DTW word alignment needs flash attention off.
   const args = [
-    "-m", MODELS.whisper.path, "-f", wavPath, "-l", opts.language, "-ojf", "-of", whisperBase, "-pp",
-    "-nfa", "-dtw", dtwPreset(WHISPER_MODEL), "--prompt", STYLE_PROMPT, "--carry-initial-prompt",
+    "-m",
+    whisperModelFile(opts.model).path,
+    "-f",
+    wavPath,
+    "-l",
+    opts.language,
+    "-ojf",
+    "-of",
+    whisperBase,
+    "-pp",
+    "-nfa",
+    "-dtw",
+    dtwPreset(opts.model),
+    "--prompt",
+    STYLE_PROMPT,
+    "--carry-initial-prompt",
   ];
 
   let progress = -1;
@@ -424,7 +437,9 @@ async function decodeChunk(
       // Dropping the text context is what stops the collapse, at the price of whisper's sentence punctuation.
       raw = await decode(["-mc", "0"], 0.9, 0.99);
       if (isCollapsed(raw.transcription ?? [])) {
-        throw new Error("whisper produced a degenerate transcript (repeated one-second segments). Try another WHISPER_MODEL.");
+        throw new Error(
+          "whisper produced a degenerate transcript (repeated one-second segments). Try another model in Settings.",
+        );
       }
     }
     const language = raw.result?.language ?? opts.language;
@@ -454,7 +469,10 @@ async function decodeChunk(
       const words = placed[index] ?? [];
       if (words.length > 0) return sentenceSegments(words, noSpaces);
       const start = Math.min(Math.max(Number(entry.segment.offsets?.from ?? 0) / 1000, 0), latestStart);
-      const end = Math.min(Math.max(Number(entry.segment.offsets?.to ?? 0) / 1000, start + MIN_WORD_SECONDS), opts.duration);
+      const end = Math.min(
+        Math.max(Number(entry.segment.offsets?.to ?? 0) / 1000, start + MIN_WORD_SECONDS),
+        opts.duration,
+      );
       notes.push({ start, end, text: entry.text });
       return [{ start, end, text: entry.text, words: [] }];
     });
@@ -491,12 +509,13 @@ async function readChunkCache(path: string, key: string): Promise<ChunkCacheFile
 async function transcribeChunked(
   wavPath: string,
   opts: { language: string; duration: number },
-  modelPath: string,
+  model: string,
   layout: WavLayout,
   onProgress: (progress: number, message?: string) => void,
   signal?: AbortSignal,
 ): Promise<Transcript> {
   const total = wavSeconds(layout);
+  const modelPath = whisperModelFile(model).path;
   const chunks = await planChunks(wavPath, layout);
   const cacheDir = join(dirname(wavPath), CHUNK_DIR);
   await mkdir(cacheDir, { recursive: true });
@@ -518,7 +537,7 @@ async function transcribeChunked(
     const cachePath = join(cacheDir, `${name}.json`);
     const key = JSON.stringify({
       wav: wavKey,
-      model: WHISPER_MODEL,
+      model,
       language: opts.language,
       start: Number(chunk.start.toFixed(3)),
       end: Number(chunk.end.toFixed(3)),
@@ -545,16 +564,32 @@ async function transcribeChunked(
       notes.push(...cached.notes);
     } else {
       const chunkWav = join(cacheDir, `${name}.wav`);
-      const wavArgs = ["-y", "-ss", chunk.start.toFixed(3), "-t", length.toFixed(3), "-i", wavPath, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", chunkWav];
+      const wavArgs = [
+        "-y",
+        "-ss",
+        chunk.start.toFixed(3),
+        "-t",
+        length.toFixed(3),
+        "-i",
+        wavPath,
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_s16le",
+        chunkWav,
+      ];
       await run(BIN.ffmpeg, wavArgs, { signal });
       const started = performance.now();
       let decoded: DecodedChunk;
       try {
-        decoded = await decodeChunk(chunkWav, { language, duration: length }, emit, signal);
+        decoded = await decodeChunk(chunkWav, { language, duration: length, model }, emit, signal);
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new Error(
           `Transcribing ${fmtTime(chunk.start)}-${fmtTime(chunk.end)} failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
         );
       }
       // Chunk 1 detects the language once, so later chunks cannot flip languages.
@@ -567,7 +602,10 @@ async function transcribeChunked(
       const shiftedNotes = decoded.notes
         .map((note) => ({ start: note.start + chunk.start, end: note.end + chunk.start, text: note.text }))
         .filter((note) => note.start >= chunk.start);
-      await Bun.write(cachePath, JSON.stringify({ key, language, words: shiftedWords, notes: shiftedNotes } satisfies ChunkCacheFile));
+      await Bun.write(
+        cachePath,
+        JSON.stringify({ key, language, words: shiftedWords, notes: shiftedNotes } satisfies ChunkCacheFile),
+      );
       words.push(...shiftedWords);
       notes.push(...shiftedNotes);
       await rm(chunkWav, { force: true });
@@ -584,7 +622,12 @@ async function transcribeChunked(
     ...sentenceSegments(words, noSpaces),
     ...notes.map((note): Segment => {
       const start = Math.min(note.start, latestStart);
-      return { start, end: Math.min(Math.max(note.end, start + MIN_WORD_SECONDS), opts.duration), text: note.text, words: [] };
+      return {
+        start,
+        end: Math.min(Math.max(note.end, start + MIN_WORD_SECONDS), opts.duration),
+        text: note.text,
+        words: [],
+      };
     }),
   ].sort((a, b) => a.start - b.start);
 
@@ -599,21 +642,31 @@ export async function transcribe(
   onProgress: (progress: number, message?: string) => void,
   signal?: AbortSignal,
 ): Promise<Transcript> {
-  const modelPath = MODELS.whisper.path;
+  const model = getSettings().values.whisperModel;
+  const modelPath = whisperModelFile(model).path;
   if (!(await Bun.file(modelPath).exists())) {
-    throw new Error(`whisper model not found: ${modelPath}. Run \`bun run setup\` to download it.`);
+    throw new Error(
+      `whisper model not found: ${modelPath}. Download it in Settings (gear icon) or run \`bun run setup\`.`,
+    );
   }
   const layout = await wavLayout(wavPath);
   if (wavSeconds(layout) <= CHUNK_SECONDS) {
     let decoded: DecodedChunk;
     try {
-      decoded = await decodeChunk(wavPath, { language: opts.language, duration: opts.duration }, onProgress, signal);
+      decoded = await decodeChunk(
+        wavPath,
+        { language: opts.language, duration: opts.duration, model },
+        onProgress,
+        signal,
+      );
     } catch (error) {
       if (signal?.aborted) throw error;
-      throw new Error(`Transcription failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`Transcription failed: ${error instanceof Error ? error.message : String(error)}`, {
+        cause: error,
+      });
     }
     onProgress(1);
     return { language: decoded.language, model: basename(modelPath), segments: decoded.segments };
   }
-  return transcribeChunked(wavPath, opts, modelPath, layout, onProgress, signal);
+  return transcribeChunked(wavPath, opts, model, layout, onProgress, signal);
 }
