@@ -170,7 +170,7 @@ const sticker: OverlayItem = {
   },
 };
 const sound: TimelineItem = { id: "so", kind: "sound", start: at(0.4), end: at(1.4), file: "beep.wav", volume: 1.5 };
-const voice: TimelineItem = { id: "v", kind: "voice", start: at(1), end: at(2), preset: "earrape" };
+const voice: TimelineItem = { id: "v", kind: "voice", start: at(1), end: at(2), preset: "earrape", volume: 1 };
 
 const everything: TimelineItem[] = [zoom, shake, flash, look, text, sticker, sound, voice];
 
@@ -399,6 +399,16 @@ describe("renderClip with a timeline", () => {
     expect(await meanVolume(outputs.main!)).toBeGreaterThan((await meanVolume(outputs.plain!)) + 6);
   });
 
+  test("voice volume scales the distorted voice", async () => {
+    const render = async (name: string, volume: number) => {
+      const out = join(dir, name);
+      await renderClip(job(name, { items: [{ ...voice, volume }], teaser: null }), ignore);
+      return meanVolume(out);
+    };
+    const [quiet, full] = await Promise.all([render("voice-quiet.mp4", 0.25), render("voice-full.mp4", 1)]);
+    expect(full).toBeGreaterThan(quiet + 6);
+  });
+
   test("a source without audio still plays a library sound", async () => {
     const out = join(dir, "silent-out.mp4");
     await renderClip(
@@ -423,6 +433,7 @@ describe("renderClip with a timeline", () => {
         start: at(i * 0.45),
         end: at(i * 0.45 + 0.4),
         preset,
+        volume: 1,
       })),
       { id: "bw", kind: "look", start: at(0), end: at(1), look: "bw" },
       { id: "bl", kind: "look", start: at(1), end: at(2), look: "blur" },

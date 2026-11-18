@@ -315,6 +315,8 @@ export type VoiceFx = "earrape" | "bass" | "chipmunk" | "deep" | "echo" | "robot
 export interface VoiceItem extends TimelineItemBase {
   kind: "voice";
   preset: VoiceFx;
+  /** 0..2, gain of the distorted voice (1 = the preset as designed). The clip's own audio is muted under it. */
+  volume: number;
 }
 
 export type TimelineItem = ZoomItem | ShakeItem | FlashItem | LookItem | OverlayItem | SoundItem | VoiceItem;

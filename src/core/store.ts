@@ -127,6 +127,7 @@ export async function getProject(id: string): Promise<Project> {
     clip.timeline ??= structuredClone(EMPTY_TIMELINE);
     for (const item of clip.timeline.items) {
       if (item.kind === "overlay") item.overTeaser ??= false;
+      else if (item.kind === "voice") item.volume ??= 1;
     }
   }
   return project;

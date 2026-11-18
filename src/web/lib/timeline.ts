@@ -235,7 +235,7 @@ export function plainItem(kind: PlainKind, id: string, span: Span, focus: FocusP
     case "look":
       return { id, kind: "look", ...span, look: "deepfry" };
     case "voice":
-      return { id, kind: "voice", ...span, preset: "earrape" };
+      return { id, kind: "voice", ...span, preset: "earrape", volume: 1 };
     case "text":
       return {
         id,

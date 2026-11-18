@@ -540,7 +540,7 @@ const ITEM_KEYS: Record<TimelineItem["kind"], string[]> = {
   look: ["look"],
   overlay: ["element", "animation", "overTeaser"],
   sound: ["file", "volume"],
-  voice: ["preset"],
+  voice: ["preset", "volume"],
 };
 
 function finiteNumber(value: unknown, name: string): number {
@@ -607,7 +607,9 @@ function parseTimelineItem(entry: unknown, what: string): TimelineItem {
       const presets = ["earrape", "bass", "chipmunk", "deep", "echo", "robot"];
       if (typeof obj.preset !== "string" || !presets.includes(obj.preset))
         throw new ValidationError(`${what}.preset must be one of ${presets.join(", ")}`);
-      return { ...base, kind, preset: obj.preset as VoiceItem["preset"] };
+      // Optional so clients from before voice volume keep working.
+      const volume = obj.volume === undefined ? 1 : numberInRange(obj.volume, `${what}.volume`, 0, 2);
+      return { ...base, kind, preset: obj.preset as VoiceItem["preset"], volume };
     }
   }
 }

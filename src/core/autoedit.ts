@@ -448,7 +448,7 @@ export function heuristicTimeline(input: EditInput): ClipTimeline {
 
     if (top.diff >= EAR_RAPE_DB) {
       const voice = clipTiming(input, top.time - 0.2, top.time - 0.2 + EAR_RAPE_LENGTH);
-      if (voice) items.push({ id: uid(), kind: "voice", ...voice, preset: "earrape" });
+      if (voice) items.push({ id: uid(), kind: "voice", ...voice, preset: "earrape", volume: 1 });
     }
 
     const match = matchingSound(input.library);
@@ -591,7 +591,7 @@ function itemFromAnswer(entry: unknown, input: EditInput): TimelineItem | null {
     }
     case "voice": {
       if (!VOICES.has(entry.preset as VoiceFx)) return null;
-      return { id, kind: "voice", ...timing, preset: entry.preset as VoiceFx };
+      return { id, kind: "voice", ...timing, preset: entry.preset as VoiceFx, volume: 1 };
     }
     default:
       return null;

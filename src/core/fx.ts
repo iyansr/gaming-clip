@@ -397,7 +397,9 @@ export function audioFxChains(audio: AudioFx, duration: number, firstSoundInput:
     // Overlapping voice items would sum past 1; the dry branch only needs to be silent wherever any wet one plays.
     chains.push(`[dry]volume='max(0,1-(${voices.map(gate).join("+")}))':eval=frame[dryg]`);
     voices.forEach((voice, i) => {
-      chains.push(`[wet${i}]${VOICE_CHAINS[voice.preset]},volume='${gate(voice)}':eval=frame[wetg${i}]`);
+      chains.push(
+        `[wet${i}]${VOICE_CHAINS[voice.preset]},volume='${sec(voice.volume)}*${gate(voice)}':eval=frame[wetg${i}]`,
+      );
     });
     chains.push(
       `[dryg]${voices.map((_, i) => `[wetg${i}]`).join("")}amix=inputs=${voices.length + 1}:normalize=0:duration=first[voiced]`,

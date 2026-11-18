@@ -369,6 +369,15 @@ export function Inspector({ project, clip, player, edit, selected, onSelect }: P
               options={VOICES}
               onChange={(preset) => update({ ...item, preset }, true)}
             />
+            <DecimalSlider
+              label="Volume"
+              value={item.volume}
+              min={0}
+              max={2}
+              step={0.05}
+              format={(v) => `${Math.round(v * 100)}%`}
+              onChange={(volume) => update({ ...item, volume: round3(clamp(volume, 0, 2)) })}
+            />
             <p className="text-[11px] leading-snug text-amber-300/90">
               The preview is approximate (it never changes the playback rate); the render is exact.
             </p>

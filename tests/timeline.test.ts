@@ -142,6 +142,13 @@ describe("parseTimeline", () => {
     );
   });
 
+  test("voice volume defaults to 1 and must be 0-2", () => {
+    const voice = { id: "v", kind: "voice", start: 10, end: 11, preset: "earrape" };
+    expect(parseTimeline(timeline([voice])).items[0]).toMatchObject({ volume: 1 });
+    expect(parseTimeline(timeline([{ ...voice, volume: 0.4 }])).items[0]).toMatchObject({ volume: 0.4 });
+    expect(() => parseTimeline(timeline([{ ...voice, volume: 3 }]))).toThrow("timeline.items[0].volume");
+  });
+
   test("rejects a teaser without a positive length", () => {
     expect(() => parseTimeline(timeline([], { start: 5, end: 5 }))).toThrow(
       "timeline.teaser.end must be after timeline.teaser.start",

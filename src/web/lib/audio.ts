@@ -36,10 +36,12 @@ class VoiceChain {
   private readonly highpass: BiquadFilterNode;
   private readonly lowpass: BiquadFilterNode;
   private readonly ring: GainNode;
+  private readonly out: GainNode;
   private readonly ringDepth: GainNode;
   private readonly echoSend: GainNode;
   private readonly feedback: GainNode;
   private current: VoiceFx | null | undefined;
+  private currentVolume = 1;
 
   constructor(
     private readonly ctx: AudioContext,
@@ -60,6 +62,7 @@ class VoiceChain {
     carrier.connect(this.ringDepth).connect(this.ring.gain);
     carrier.start();
     const out = ctx.createGain();
+    this.out = out;
     this.echoSend = ctx.createGain();
     this.echoSend.gain.value = 0;
     const delay = ctx.createDelay(1);
@@ -88,7 +91,13 @@ class VoiceChain {
     param.setTargetAtTime(value, this.ctx.currentTime, 0.01);
   }
 
-  apply(preset: VoiceFx | null) {
+  /** `volume` scales the distorted voice like the renderer's wet gain; the plain element always plays at 1. */
+  apply(preset: VoiceFx | null, volume = 1) {
+    const level = preset ? volume : 1;
+    if (level !== this.currentVolume) {
+      this.currentVolume = level;
+      this.set(this.out.gain, level);
+    }
     if (preset === this.current) return;
     this.current = preset;
     this.set(this.pre.gain, preset === "earrape" ? 10 : 1);
@@ -146,7 +155,7 @@ export class PlayerAudio {
     for (const sound of plan.sounds) this.fetchBytes(sound.file).catch((e: unknown) => console.error(e));
     if (plan.voices.length > 0 && this.ctx) this.ensureVoice(this.ctx);
     if (!this.video.paused) void this.reschedule();
-    else this.voice?.apply(this.voiceAt(this.video.currentTime));
+    else this.applyVoiceAt(this.video.currentTime);
   }
 
   /** Plays a library sound once, for the inspector and the library; `onEnded` fires when it stops for any reason. */
@@ -229,8 +238,9 @@ export class PlayerAudio {
     if (this.bus) this.bus.gain.value = this.video.muted ? 0 : this.video.volume;
   }
 
-  private voiceAt(t: number): VoiceFx | null {
-    return this.plan.voices.find((v) => t >= v.start && t < v.end)?.preset ?? null;
+  private applyVoiceAt(t: number) {
+    const voice = this.plan.voices.find((v) => t >= v.start && t < v.end);
+    this.voice?.apply(voice?.preset ?? null, voice?.volume);
   }
 
   private stopSounds() {
@@ -264,7 +274,7 @@ export class PlayerAudio {
   }
 
   private tickVoice = () => {
-    this.voice?.apply(this.voiceAt(this.video.currentTime));
+    this.applyVoiceAt(this.video.currentTime);
     if (!this.video.paused) this.raf = requestAnimationFrame(this.tickVoice);
   };
 
