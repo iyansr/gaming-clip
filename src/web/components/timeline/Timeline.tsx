@@ -461,7 +461,7 @@ export function Timeline({
         byFile,
       );
       if (typeof moved === "string") {
-        setNotice({ tone: "error", text: `${moved}. The selection stays where it was.` });
+        setNotice({ tone: "error", text: `${moved}. The selection stops at the last free position.` });
         return;
       }
       setNotice(null);
@@ -472,7 +472,7 @@ export function Timeline({
     const next = propose(d, dt);
     const problem = problemOf(d.id, next);
     if (problem) {
-      setNotice({ tone: "error", text: `${problem}. The block stays where it was.` });
+      setNotice({ tone: "error", text: `${problem}. The block stops at the last free position.` });
       return;
     }
     setNotice(null);
@@ -1010,8 +1010,8 @@ export function Timeline({
             {ai === "append" ? "Adding..." : "Append AI edit"}
           </Button>
         </fieldset>
+        {/* The selection count lives in the inspector: a longer label here wrapped the header and shifted the tracks. */}
         <span className="text-xs text-zinc-400 tabular-nums">
-          {selItems.length > 1 && `${selItems.length} selected · `}
           {items.length}/{MAX_TIMELINE_ITEMS}
         </span>
       </header>
