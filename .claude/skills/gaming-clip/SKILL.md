@@ -147,6 +147,76 @@ bun run clip thumbnail <id>                 # selected clips with their current 
 - Changing a clip's range, layout, focus, or its title (when the title is the headline) discards
   the thumbnail file; generate again.
 
+## 7. Watermarks
+
+Up to 5 overlays per clip, drawn under the captions on every frame (and on the thumbnail when
+`onThumbnail` is true). Usually the user places them in the web UI; headlessly:
+
+```bash
+bun run clip settings <id> --clips all --watermarks-json marks.json   # every clip AND the project defaults
+bun run clip settings <id> --clips <clipId> --no-watermarks           # removes them
+```
+
+`marks.json` is an array; coordinates are in the 1080x1920 output frame, `x`/`y` is the CENTRE:
+
+```json
+[
+  {
+    "id": "wm1a",
+    "kind": "text",
+    "text": "@name",
+    "font": "Anton",
+    "size": 64,
+    "color": "#ffffff",
+    "stroke": 4,
+    "strokeColor": "#000000",
+    "x": 540,
+    "y": 1700,
+    "rotation": 0,
+    "opacity": 0.85,
+    "onThumbnail": false
+  },
+  {
+    "id": "wm2b",
+    "kind": "image",
+    "file": "<name from an upload to /api/projects/<id>/assets>",
+    "width": 240,
+    "x": 900,
+    "y": 160,
+    "rotation": 0,
+    "opacity": 0.7,
+    "onThumbnail": true
+  }
+]
+```
+
+Fonts are `Anton`, `Bangers`, `Poppins ExtraBold`, `Poppins SemiBold`. Image files must be
+uploaded through the web UI or the assets API first (PNG, JPEG or WebP). Changing watermarks
+discards the clip's rendered file: render again.
+
+## 8. Post text (Instagram, TikTok, YouTube Shorts)
+
+After a clip is final, write the text the user pastes when posting. It needs the Highlight AI
+(Settings, or `LLM_COMMAND`/`LLM_MODEL` in `.env`); without it the command fails with
+"Set up Highlight AI in Settings first". It never runs during ingest or render:
+
+```bash
+bun run clip social <id>                       # selected clips, in the video's language
+bun run clip social <id> --clips <clipId> --language id
+```
+
+Result: Instagram and TikTok caption + hashtags, YouTube title (max 100 chars) + description +
+hashtags (always `#Shorts`), stored in `clip.social`. It is written for the clip's current range:
+run it again after trimming. Read the text and fix anything wrong before giving it to the user.
+
+## 9. Editing the AI prompts
+
+Settings > Prompts holds two editable guidance texts: how highlights are judged
+(`highlightPrompt`) and how post text is written (`socialPrompt`), max 6000 characters, empty =
+built-in default. Only the guidance is editable: the JSON answer format, timestamps and clip
+length limits are always appended in code, so a custom prompt cannot break parsing. Change them
+through the web UI (or `PATCH /api/settings`); there is no env variable.
+
 ## Other commands
 
 ```bash
