@@ -17,10 +17,11 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const COMMAND_TIMEOUT_MS = 300_000;
 const BODY_EXCERPT = 300;
 /**
- * Output budget of one endpoint call. Anvia's Anthropic client defaults to 1024 tokens, which cuts an AI edit
- * (a dozen timeline items with Indonesian text) or a long highlight list mid-JSON. 8192 fits every current model.
+ * Output budget of an Anthropic call. Messages requires max_tokens and Anvia's Anthropic client fills in 1024, which
+ * cut AI edits of 8+ items mid-JSON. OpenAI-compatible calls send no limit (the server's own maximum applies), since
+ * some compatible servers reject a larger max_tokens than they support.
  */
-const MAX_OUTPUT_TOKENS = 8192;
+const ANTHROPIC_MAX_TOKENS = 8192;
 
 /** The model stopped at the output limit: the JSON is incomplete, and asking again gives the same cut. */
 export class LlmTruncatedError extends Error {
@@ -134,12 +135,14 @@ async function askEndpoint(messages: ChatMessage[], signal?: AbortSignal): Promi
     abortSignal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
       : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    maxTokens: MAX_OUTPUT_TOKENS,
   };
-  const complete = async (model: Parameters<typeof generateCompletion>[0]["model"]): Promise<string> => {
-    const result = await generateCompletion({ ...request, model });
+  const complete = async (
+    model: Parameters<typeof generateCompletion>[0]["model"],
+    maxTokens?: number,
+  ): Promise<string> => {
+    const result = await generateCompletion({ ...request, model, ...(maxTokens ? { maxTokens } : {}) });
     if (result.finishReason === "length")
-      throw new LlmTruncatedError(`The AI answer was cut off at the ${MAX_OUTPUT_TOKENS}-token output limit`);
+      throw new LlmTruncatedError("The AI answer was cut off at the model's output limit");
     return result.text;
   };
   try {
@@ -156,7 +159,7 @@ async function askEndpoint(messages: ChatMessage[], signal?: AbortSignal): Promi
             }),
           })
         : new AnthropicClient(client);
-      return await complete(anthropic.completionModel({ modelId: llm.model }));
+      return await complete(anthropic.completionModel({ modelId: llm.model }), ANTHROPIC_MAX_TOKENS);
     }
     return await complete(new OpenAIClient(client).completionModel({ modelId: llm.model, api: "chat" }));
   } catch (error) {
