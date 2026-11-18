@@ -39,9 +39,11 @@ export const VOICE_LABELS: Record<VoiceFx, string> = {
 
 /** What the timeline draws for an item or the teaser: row, colour and caption. */
 export type BlockKind = TimelineItemKind | "sticker" | "teaser";
-export type TrackId = "effects" | "overlays" | "audio" | "teaser";
+export type TrackId = "media" | "effects" | "overlays" | "audio" | "teaser";
 
+/** Rows of the timeline, top to bottom. Items live in effects, overlays and audio; media and teaser are drawn apart. */
 export const TRACKS: { id: TrackId; label: string }[] = [
+  { id: "media", label: "Media" },
   { id: "effects", label: "Effects" },
   { id: "overlays", label: "Overlays" },
   { id: "audio", label: "Audio" },
@@ -52,7 +54,9 @@ export function blockKind(item: TimelineItem): BlockKind {
   return item.kind === "overlay" && item.element.kind === "image" ? "sticker" : item.kind;
 }
 
-export function trackOf(item: TimelineItem): Exclude<TrackId, "teaser"> {
+export type ItemTrackId = Exclude<TrackId, "media" | "teaser">;
+
+export function trackOf(item: TimelineItem): ItemTrackId {
   switch (item.kind) {
     case "overlay":
       return "overlays";
@@ -62,6 +66,20 @@ export function trackOf(item: TimelineItem): Exclude<TrackId, "teaser"> {
     default:
       return "effects";
   }
+}
+
+/** Ids the selection uses for the intro and the outro block. */
+export const INTRO_ID = "intro";
+export const OUTRO_ID = "outro";
+export type BookendSlot = "intro" | "outro";
+
+/** Seconds a bookend block is drawn for when its library video is unknown (not loaded yet, or deleted). */
+const BOOKEND_FALLBACK = 2;
+
+/** Length of the intro/outro video on the timeline axis; 0 when none is set. */
+export function bookendLength(file: string | null, library: Map<string, LibraryItem>): number {
+  if (file === null) return 0;
+  return library.get(file)?.duration ?? BOOKEND_FALLBACK;
 }
 
 /** Tailwind classes of a block, by what it is. */
@@ -149,6 +167,63 @@ export function maxLength(item: TimelineItem, library: Map<string, LibraryItem>)
     if (d != null) return Math.min(ITEM_LIMITS.max, d + SOUND_SLACK);
   }
   return ITEM_LIMITS.max;
+}
+
+/**
+ * Moves the items with `ids` by `delta` seconds as one group. The delta is cut down so no member leaves the clip
+ * (a member already outside may not go further out), then every moved item gets the same checks as a single edit.
+ * Returns the new item list, the delta that applied and the new span of each moved item, or why it cannot be done.
+ */
+export function shiftItems(
+  items: TimelineItem[],
+  ids: ReadonlySet<string>,
+  delta: number,
+  clip: Span,
+  library: Map<string, LibraryItem>,
+): { items: TimelineItem[]; delta: number; moved: Map<string, Span> } | string {
+  const members = items.filter((i) => ids.has(i.id));
+  let lo = -Infinity;
+  let hi = Infinity;
+  for (const m of members) {
+    lo = Math.max(lo, Math.min(0, clip.start - m.start));
+    hi = Math.min(hi, Math.max(0, clip.end - m.end));
+  }
+  const applied = round3(clamp(delta, lo, hi));
+  const moved = new Map<string, Span>();
+  const next = items.map((i) => {
+    if (!ids.has(i.id)) return i;
+    const span = { start: round3(i.start + applied), end: round3(i.end + applied) };
+    moved.set(i.id, span);
+    return { ...i, ...span };
+  });
+  for (const i of next) {
+    if (!moved.has(i.id)) continue;
+    const problem = itemProblem(next, i, library, clip.start);
+    if (problem) return problem;
+  }
+  return { items: next, delta: applied, moved };
+}
+
+/** Copies of the items with `ids`, each placed right after its original; the copies' ids, or why it cannot be done. */
+export function duplicateItems(
+  items: TimelineItem[],
+  ids: ReadonlySet<string>,
+  clip: Span,
+): { items: TimelineItem[]; copies: string[] } | string {
+  const all = [...items];
+  const copies: string[] = [];
+  for (const original of items.filter((i) => ids.has(i.id))) {
+    const placed = placeItem(all, original.kind, original.end, original.end - original.start, clip, clip.start);
+    if (typeof placed === "string") return placed;
+    const id = newItemId(all);
+    all.push(
+      original.kind === "overlay"
+        ? { ...original, ...placed, id, element: { ...original.element, id } }
+        : { ...original, ...placed, id },
+    );
+    copies.push(id);
+  }
+  return { items: all, copies };
 }
 
 /** Row of every item, so overlapping items of one track stack instead of hiding each other. */

@@ -19,7 +19,7 @@ import { media } from "../lib/api";
 import { resolveCustom, type CustomUi } from "../lib/custom";
 import { cn, fmtTime } from "../lib/format";
 import { useAssetImage, useLibraryImages } from "../lib/images";
-import { drawFlashes, drawOverlayItems, FramePainter } from "../lib/paint";
+import { drawCover, drawFlashes, drawOverlayItems, FramePainter } from "../lib/paint";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
 import { drawableWatermarks, sharedOffscreen, useWatermarkBoxes, useWatermarkImages } from "../lib/watermarks";
@@ -29,8 +29,8 @@ import { FocusCrosshair } from "./timeline/FocusCrosshair";
 import { Button } from "./ui";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 
-/** 9:16 canvas whose height is min(46vh, 560px): small enough that the timeline below it shows without scrolling. */
-const PREVIEW_WIDTH = "calc(min(46vh, 560px) * 9 / 16)";
+/** 9:16 canvas whose height is min(38vh, 560px): small enough that the timeline below it shows without scrolling. */
+const PREVIEW_WIDTH = "calc(min(38vh, 560px) * 9 / 16)";
 
 export type PreviewMode = "preview" | "rendered" | "thumbnail";
 
@@ -169,6 +169,12 @@ export function Preview({
         items: timed,
         stickers: stickerBitmaps,
       } = state.current;
+      // An intro or outro replaces the whole frame: no layout, captions or effects over it.
+      const bookend = player.bookend;
+      if (bookend) {
+        drawCover(ctx, bookend, OUTPUT_SIZE);
+        return;
+      }
       const video = player.video;
       if (!p.source || video.readyState < 2) {
         ctx.fillStyle = "#000";
@@ -225,18 +231,21 @@ export function Preview({
 
   const playing = usePlayer(player, (p) => p.playing);
   const time = usePlayer(player, (p) => p.time);
+  const segment = usePlayer(player, (p) => p.segment);
+  const offset = usePlayer(player, (p) => p.offset);
   const muted = usePlayer(player, (p) => p.muted);
   const volume = usePlayer(player, (p) => p.volume);
   const error = usePlayer(player, (p) => p.error);
 
   const length = clip.end - clip.start;
-  const local = Math.min(length, Math.max(0, time - clip.start));
+  const local =
+    segment === "outro" ? length : segment === "intro" ? 0 : Math.min(length, Math.max(0, time - clip.start));
   const togglePlay = () => player.toggle().catch((e: unknown) => toast.error(e));
 
   const locked = clip.render.status === "queued" || clip.render.status === "rendering";
   const editing = live && !locked;
   /** Boxes only show while paused or hovered, so they never cover playback. */
-  const showBoxes = editing && (!playing || hover);
+  const showBoxes = editing && segment === "clip" && (!playing || hover);
 
   // Timed overlays are edited like watermarks while they are showing at the playhead (or selected); the display
   // elements carry the item id so a box maps straight back to its item.
@@ -379,8 +388,8 @@ export function Preview({
             >
               {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
             </Button>
-            <span className="text-xs text-zinc-300 tabular-nums">
-              {local.toFixed(1)}s / {length.toFixed(1)}s
+            <span className="text-xs text-zinc-300 capitalize tabular-nums">
+              {segment === "clip" ? `${local.toFixed(1)}s / ${length.toFixed(1)}s` : `${segment} ${offset.toFixed(1)}s`}
             </span>
             <span className="flex-1" />
             <button

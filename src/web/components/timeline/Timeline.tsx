@@ -1,5 +1,8 @@
 import {
+  ArrowLeftToLine,
+  ArrowRightToLine,
   Copy,
+  Film,
   Flag,
   Loader2,
   Mic,
@@ -13,36 +16,53 @@ import {
   Zap,
   ZoomIn,
 } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type FocusEvent,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react";
 
 import { ITEM_LIMITS, MAX_TIMELINE_ITEMS, TEASER_LIMITS } from "../../../shared/effects";
 import { computeLayout } from "../../../shared/layout";
+import { LIBRARY_TYPES } from "../../../shared/library";
 import {
   OUTPUT_SIZE,
   type Clip,
+  type ClipSettings,
   type ClipTimeline,
   type LibraryItem,
   type Project,
   type TimelineItem,
 } from "../../../shared/types";
-import { api, errorMessage } from "../../lib/api";
+import { api, errorMessage, libraryFileError, libraryNameOf, uploadLibraryFile } from "../../lib/api";
 import { clamp, cn } from "../../lib/format";
 import type { ClipEdit } from "../../lib/hooks";
 import { usePlayer, type Player } from "../../lib/player";
+import { useVideoPoster } from "../../lib/posters";
 import {
   assignLanes,
   BLOCK_CLASS,
   blockKind,
+  bookendLength,
+  duplicateItems,
   focusPoints,
+  INTRO_ID,
   isEmpty,
   itemLabel,
   itemProblem,
   maxLength,
   newItemId,
+  OUTRO_ID,
   placeItem,
   PLAIN_LENGTH,
   plainItem,
   round3,
+  shiftItems,
   snapToGrid,
   SNAP_PX,
   stickerItem,
@@ -51,6 +71,7 @@ import {
   TRACKS,
   trackOf,
   type BlockKind,
+  type BookendSlot,
   type PlainKind,
   type Span,
   type TrackId,
@@ -64,6 +85,8 @@ export const TEASER_ID = "teaser";
 const LABEL_WIDTH = 84;
 const RULER_HEIGHT = 24;
 const LANE_HEIGHT = 26;
+/** The media row is taller so the intro/outro posters read as pictures. */
+const MEDIA_HEIGHT = 46;
 const DRAG_THRESHOLD = 3;
 
 const ICONS: Record<BlockKind, typeof ZoomIn> = {
@@ -88,7 +111,23 @@ interface Drag {
   moved: boolean;
   /** Last position the checks accepted; what the block shows and what is committed on release. */
   valid: Span;
+  /** Every block that moves with this one (a drag of a selected block moves the whole selection), at its start. */
+  group: ReadonlySet<string> | null;
+  /** Last accepted spans of the group. */
+  validGroup: Map<string, Span> | null;
+  /** A plain press on one of several selected blocks keeps the selection for a drag; a click then narrows it. */
+  collapse: boolean;
 }
+
+/** Selection rectangle, in px from the top-left of the track area. */
+interface Box {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+type EmptyPress = { kind: "range"; t0: number; moved: boolean } | { kind: "box"; moved: boolean; hits: string };
 
 interface Notice {
   tone: "info" | "error";
@@ -102,9 +141,9 @@ interface Props {
   edit: (clipId: string, patch: ClipEdit, immediate?: boolean) => void;
   flushAll: () => Promise<void>;
   applyProject: (p: Project) => void;
-  /** The selected item's id, TEASER_ID for the teaser, or null. */
-  selected: string | null;
-  onSelect: (id: string | null) => void;
+  /** Ids of the selected items, or TEASER_ID / INTRO_ID / OUTRO_ID alone. */
+  selected: string[];
+  onSelect: (ids: string[]) => void;
   /** Switch the preview column to the live canvas (where the effects show). */
   onShowPreview: () => void;
 }
@@ -115,8 +154,87 @@ function tickStep(pps: number): number {
 }
 
 function fmtTick(rel: number): string {
+  if (rel < 0) return `-${fmtTick(-rel)}`;
   if (rel >= 60) return `${Math.floor(rel / 60)}:${String(Math.round(rel % 60)).padStart(2, "0")}`;
   return `${Number(rel.toFixed(1))}s`;
+}
+
+/** Which half of the timeline a drag is over: the left sets the intro, the right the outro. */
+function zoneAt(e: DragEvent<HTMLElement>): BookendSlot {
+  const a = e.currentTarget.getBoundingClientRect();
+  return e.clientX < a.left + a.width / 2 ? "intro" : "outro";
+}
+
+const SLOT_LABEL: Record<BookendSlot, string> = { intro: "Intro", outro: "Outro" };
+
+/** The intro or outro on the media row: as wide as the video, with a strip of stills behind its name. */
+function BookendBlock({
+  slot,
+  file,
+  name,
+  length,
+  left,
+  width,
+  selected,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onKeyDown,
+  onFocus,
+}: {
+  slot: BookendSlot;
+  file: string;
+  name: string;
+  length: number | null;
+  left: number;
+  width: number;
+  selected: boolean;
+  onPointerDown: (e: PointerEvent<HTMLElement>) => void;
+  onPointerMove: (e: PointerEvent<HTMLElement>) => void;
+  onPointerUp: () => void;
+  onKeyDown: (e: KeyboardEvent<HTMLElement>) => void;
+  onFocus: (e: FocusEvent<HTMLElement>) => void;
+}) {
+  const poster = useVideoPoster(file);
+  const label = `${SLOT_LABEL[slot]}: ${name}${length !== null ? `, ${length.toFixed(1)} s` : ""}`;
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-block=""
+      data-testid={`block-${slot}`}
+      aria-pressed={selected}
+      aria-label={label}
+      title={label}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onKeyDown={onKeyDown}
+      onFocus={onFocus}
+      className={cn(
+        "absolute flex cursor-pointer touch-none items-end overflow-hidden rounded border border-violet-300 bg-violet-800 p-0.5 text-[11px] leading-none font-medium text-white select-none",
+        selected && "z-10 ring-2 ring-white",
+      )}
+      style={{
+        left,
+        width: Math.max(8, width),
+        top: 2,
+        height: MEDIA_HEIGHT - 4,
+        backgroundImage: poster ? `url(${poster})` : undefined,
+        backgroundSize: "auto 100%",
+        backgroundRepeat: "repeat-x",
+      }}
+    >
+      <span className="pointer-events-none flex max-w-full items-center gap-1 rounded bg-black/70 px-1 py-0.5">
+        <Film className="size-3 shrink-0" aria-hidden />
+        <span className="truncate">
+          {SLOT_LABEL[slot]} · {name}
+        </span>
+        {length !== null && <span className="shrink-0 text-zinc-300 tabular-nums">{length.toFixed(1)}s</span>}
+      </span>
+    </div>
+  );
 }
 
 export function Timeline({
@@ -136,10 +254,30 @@ export function Timeline({
   const length = clip.end - clip.start;
   const locked = clip.render.status === "queued" || clip.render.status === "rendering";
 
+  // The intro and outro sit on the same time scale, before the clip's 0 s and after its end.
+  const introFile = clip.settings.intro;
+  const outroFile = clip.settings.outro;
+  const lead = bookendLength(introFile, library.byFile);
+  const tail = bookendLength(outroFile, library.byFile);
+  const axisStart = clip.start - lead;
+  const axisLength = lead + length + tail;
+
   const time = usePlayer(player, (p) => p.time);
-  const playhead = clamp(time, clip.start, clip.end);
+  const segment = usePlayer(player, (p) => p.segment);
+  const offset = usePlayer(player, (p) => p.offset);
+  /** Where edits happen: the playhead inside the clip (at its edge while an intro or outro shows). */
+  const playhead =
+    segment === "intro" ? clip.start : segment === "outro" ? clip.end : clamp(time, clip.start, clip.end);
+  /** Where the playhead is drawn, which can be inside a bookend. */
+  const headAt =
+    segment === "intro"
+      ? clip.start - lead + Math.min(offset, lead)
+      : segment === "outro"
+        ? clip.end + Math.min(offset, tail)
+        : playhead;
 
   const areaRef = useRef<HTMLDivElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
     const el = areaRef.current;
@@ -149,14 +287,17 @@ export function Timeline({
     setWidth(el.clientWidth);
     return () => observer.disconnect();
   }, []);
-  const pps = width > 0 ? width / length : 0;
+  const pps = width > 0 ? width / axisLength : 0;
 
-  const [drag, setDrag] = useState<{ id: string; span: Span } | null>(null);
+  const [drag, setDrag] = useState<Map<string, Span> | null>(null);
   const [range, setRange] = useState<Span | null>(null);
+  const [box, setBox] = useState<Box | null>(null);
+  const [drop, setDrop] = useState<BookendSlot | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [ai, setAi] = useState<"replace" | "append" | null>(null);
   const dragRef = useRef<Drag | null>(null);
-  const marquee = useRef<{ t0: number; moved: boolean } | null>(null);
+  const press = useRef<EmptyPress | null>(null);
+  const boxStart = useRef<{ x: number; y: number } | null>(null);
   const scrubbing = useRef(false);
 
   const layout = useMemo(
@@ -176,15 +317,49 @@ export function Timeline({
   const clipSpan: Span = { start: clip.start, end: clip.end };
 
   /** Latest values for pointer handlers, which outlive the render that created them. */
-  const latest = useRef({ items, teaser, pps, playhead, clip, byFile: library.byFile });
+  const latest = useRef({
+    items,
+    teaser,
+    pps,
+    playhead,
+    clip,
+    byFile: library.byFile,
+    axisStart,
+    lead,
+    tail,
+    ids: selected,
+  });
   useLayoutEffect(() => {
-    latest.current = { items, teaser, pps, playhead, clip, byFile: library.byFile };
+    latest.current = {
+      items,
+      teaser,
+      pps,
+      playhead,
+      clip,
+      byFile: library.byFile,
+      axisStart,
+      lead,
+      tail,
+      ids: selected,
+    };
   });
 
-  const timeAt = (clientX: number): number => {
-    const box = areaRef.current?.getBoundingClientRect();
-    if (!box || latest.current.pps === 0) return clip.start;
-    return clamp(clip.start + (clientX - box.left) / latest.current.pps, clip.start, clip.end);
+  /** Source time under a pointer, anywhere on the axis (intro and outro included). */
+  const axisAt = (clientX: number): number => {
+    const rect = areaRef.current?.getBoundingClientRect();
+    const { pps: k, axisStart: a0, clip: c, tail: tl } = latest.current;
+    if (!rect || k === 0) return c.start;
+    return clamp(a0 + (clientX - rect.left) / k, a0, c.end + tl);
+  };
+  /** Source time under a pointer, held inside the clip (for items and ranges). */
+  const timeAt = (clientX: number): number => clamp(axisAt(clientX), clip.start, clip.end);
+
+  /** Moves the preview to an axis time: into the intro/outro when it lies there, else into the clip. */
+  const seekAxis = (t: number) => {
+    const { clip: c, lead: l } = latest.current;
+    if (t < c.start && l > 0) player.seekBookend("intro", Math.max(0, t - (c.start - l)));
+    else if (t > c.end) player.seekBookend("outro", t - c.end);
+    else player.seek(t);
   };
 
   // --- what a drag may do -----------------------------------------------------------------------------------------
@@ -201,6 +376,16 @@ export function Timeline({
     return item ? itemProblem(all, { ...item, ...span }, byFile, c.start) : null;
   };
 
+  /** Where a moved block starts for a pointer travel of `dt` s: snapped to the playhead (either edge) or the grid. */
+  const snappedStart = (d: Drag, dt: number): number => {
+    const { pps: k, playhead: ph, clip: c } = latest.current;
+    const dur = d.orig.end - d.orig.start;
+    const start = d.orig.start + dt;
+    if (Math.abs(start - ph) * k <= SNAP_PX) return ph;
+    if (Math.abs(start + dur - ph) * k <= SNAP_PX) return ph - dur;
+    return c.start + snapToGrid(start - c.start);
+  };
+
   const propose = (d: Drag, dt: number): Span => {
     const { pps: k, playhead: ph, items: all, byFile, clip: c } = latest.current;
     const isTeaser = d.id === TEASER_ID;
@@ -210,11 +395,7 @@ export function Timeline({
     const grid = (t: number) => (Math.abs(t - ph) * k <= SNAP_PX ? ph : c.start + snapToGrid(t - c.start));
     if (d.mode === "move") {
       const dur = d.orig.end - d.orig.start;
-      let start = d.orig.start + dt;
-      if (Math.abs(start - ph) * k <= SNAP_PX) start = ph;
-      else if (Math.abs(start + dur - ph) * k <= SNAP_PX) start = ph - dur;
-      else start = c.start + snapToGrid(start - c.start);
-      start = clamp(start, c.start, Math.max(c.start, c.end - dur));
+      const start = clamp(snappedStart(d, dt), c.start, Math.max(c.start, c.end - dur));
       return { start: round3(start), end: round3(start + dur) };
     }
     if (d.mode === "left") {
@@ -227,12 +408,27 @@ export function Timeline({
     return { start, end: round3(Math.min(end, start + maxLen)) };
   };
 
+  /** Shift/Ctrl/Cmd-click: adds or drops one item. The teaser and the bookends are never part of a multi-selection. */
+  const toggle = (id: string) => {
+    const { items: all, ids } = latest.current;
+    const base = ids.filter((s) => all.some((i) => i.id === s));
+    onSelect(base.includes(id) ? base.filter((s) => s !== id) : [...base, id]);
+  };
+
   const beginDrag = (e: PointerEvent<HTMLElement>, id: string, span: Span) => {
     e.stopPropagation();
-    onSelect(id);
     onShowPreview();
-    if (locked || ai) return;
+    const isItem = id !== TEASER_ID;
+    if (isItem && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+      toggle(id);
+      return;
+    }
     const edge = (e.target as HTMLElement).dataset.edge;
+    const members = latest.current.items.filter((i) => latest.current.ids.includes(i.id));
+    const grouped = isItem && !edge && members.length > 1 && members.some((i) => i.id === id);
+    if (!grouped) onSelect([id]);
+    setNotice(null);
+    if (locked || ai) return;
     e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = {
       id,
@@ -241,6 +437,9 @@ export function Timeline({
       orig: span,
       moved: false,
       valid: span,
+      group: grouped ? new Set(members.map((i) => i.id)) : null,
+      validGroup: null,
+      collapse: grouped,
     };
   };
 
@@ -250,7 +449,27 @@ export function Timeline({
     const dx = e.clientX - d.x0;
     if (!d.moved && Math.abs(dx) < DRAG_THRESHOLD) return;
     d.moved = true;
-    const next = propose(d, dx / latest.current.pps);
+    const dt = dx / latest.current.pps;
+    if (d.group) {
+      // The dragged block snaps; the others keep their distance to it. The group is held inside the clip.
+      const { items: all, byFile, clip: c } = latest.current;
+      const moved = shiftItems(
+        all,
+        d.group,
+        snappedStart(d, dt) - d.orig.start,
+        { start: c.start, end: c.end },
+        byFile,
+      );
+      if (typeof moved === "string") {
+        setNotice({ tone: "error", text: `${moved}. The selection stays where it was.` });
+        return;
+      }
+      setNotice(null);
+      d.validGroup = moved.moved;
+      setDrag(moved.moved);
+      return;
+    }
+    const next = propose(d, dt);
     const problem = problemOf(d.id, next);
     if (problem) {
       setNotice({ tone: "error", text: `${problem}. The block stays where it was.` });
@@ -258,15 +477,27 @@ export function Timeline({
     }
     setNotice(null);
     d.valid = next;
-    setDrag({ id: d.id, span: next });
+    setDrag(new Map([[d.id, next]]));
   };
 
   const endDrag = () => {
     const d = dragRef.current;
     dragRef.current = null;
     setDrag(null);
-    if (!d?.moved || (d.valid.start === d.orig.start && d.valid.end === d.orig.end)) return;
+    if (!d) return;
+    if (!d.moved) {
+      if (d.collapse) onSelect([d.id]);
+      return;
+    }
     const { items: all, teaser: t } = latest.current;
+    if (d.group) {
+      const spans = d.validGroup;
+      if (!spans || spans.get(d.id)?.start === d.orig.start) return;
+      // One request for the whole move.
+      commit({ items: all.map((i) => ({ ...i, ...spans.get(i.id) })), teaser: t });
+      return;
+    }
+    if (d.valid.start === d.orig.start && d.valid.end === d.orig.end) return;
     commit(
       d.id === TEASER_ID
         ? { items: all, teaser: d.valid }
@@ -274,40 +505,82 @@ export function Timeline({
     );
   };
 
-  // --- playhead and range selection --------------------------------------------------------------------------------
+  // --- playhead, range selection and the selection box --------------------------------------------------------------
 
   const scrubDown = (e: PointerEvent<HTMLElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     scrubbing.current = true;
-    player.seek(timeAt(e.clientX));
+    seekAxis(axisAt(e.clientX));
   };
   const scrubMove = (e: PointerEvent<HTMLElement>) => {
-    if (scrubbing.current) player.seek(timeAt(e.clientX));
+    if (scrubbing.current) seekAxis(axisAt(e.clientX));
   };
   const scrubUp = () => {
     scrubbing.current = false;
   };
 
+  /** Ids of the item blocks the box touches. */
+  const itemsInBox = (b: Box): string[] => {
+    const area = areaRef.current;
+    if (!area) return [];
+    const a = area.getBoundingClientRect();
+    const [left, right] = [Math.min(b.x0, b.x1) + a.left, Math.max(b.x0, b.x1) + a.left];
+    const [top, bottom] = [Math.min(b.y0, b.y1) + a.top, Math.max(b.y0, b.y1) + a.top];
+    return [...area.querySelectorAll<HTMLElement>("[data-item-id]")]
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return r.left < right && r.right > left && r.top < bottom && r.bottom > top;
+      })
+      .map((el) => el.dataset.itemId!);
+  };
+
+  const relative = (e: PointerEvent<HTMLElement>) => {
+    const a = areaRef.current!.getBoundingClientRect();
+    return { x: e.clientX - a.left, y: e.clientY - a.top };
+  };
+
   const trackDown = (e: PointerEvent<HTMLElement>) => {
     if (e.target !== e.currentTarget) return;
+    sectionRef.current?.focus({ preventScroll: true });
+    setNotice(null);
     e.currentTarget.setPointerCapture(e.pointerId);
-    marquee.current = { t0: timeAt(e.clientX), moved: false };
+    if (e.shiftKey || e.altKey) {
+      boxStart.current = relative(e);
+      press.current = { kind: "box", moved: false, hits: "" };
+    } else {
+      press.current = { kind: "range", t0: timeAt(e.clientX), moved: false };
+    }
   };
   const trackMove = (e: PointerEvent<HTMLElement>) => {
-    const m = marquee.current;
+    const m = press.current;
     if (!m) return;
+    if (m.kind === "box") {
+      const from = boxStart.current!;
+      const to = relative(e);
+      if (!m.moved && Math.hypot(to.x - from.x, to.y - from.y) < DRAG_THRESHOLD) return;
+      m.moved = true;
+      const next = { x0: from.x, y0: from.y, x1: to.x, y1: to.y };
+      setBox(next);
+      const hits = itemsInBox(next);
+      if (hits.join(",") !== m.hits) {
+        m.hits = hits.join(",");
+        onSelect(hits);
+      }
+      return;
+    }
     const t = timeAt(e.clientX);
     if (!m.moved && Math.abs(t - m.t0) * latest.current.pps < DRAG_THRESHOLD) return;
     m.moved = true;
     setRange({ start: round3(Math.min(m.t0, t)), end: round3(Math.max(m.t0, t)) });
   };
   const trackUp = (e: PointerEvent<HTMLElement>) => {
-    const m = marquee.current;
-    marquee.current = null;
+    const m = press.current;
+    press.current = null;
+    setBox(null);
     if (!m || m.moved) return;
     setRange(null);
-    onSelect(null);
-    player.seek(timeAt(e.clientX));
+    onSelect([]);
+    seekAxis(axisAt(e.clientX));
   };
 
   // --- edits ---------------------------------------------------------------------------------------------------------
@@ -322,7 +595,7 @@ export function Timeline({
     const item = make(newItemId(all), placed);
     setNotice(null);
     commit({ items: [...all, item], teaser: latest.current.teaser });
-    onSelect(item.id);
+    onSelect([item.id]);
     onShowPreview();
   };
 
@@ -344,64 +617,105 @@ export function Timeline({
       file: sound.file,
       volume: 1,
     }));
-  // The picker calls back later, so it goes through the ref and sees the playhead and items of that moment.
-  const pickers = useRef({ addSticker, addSound });
+
+  /** Sets (or with null clears) the intro or outro through the settings, like any other clip setting. */
+  const setBookend = (slot: BookendSlot, file: string | null) => {
+    setNotice(null);
+    edit(clip.id, { settings: { [slot]: file } satisfies Partial<ClipSettings> }, true);
+    if (file) {
+      onSelect([slot === "intro" ? INTRO_ID : OUTRO_ID]);
+      onShowPreview();
+    } else if (latest.current.ids.includes(slot === "intro" ? INTRO_ID : OUTRO_ID)) onSelect([]);
+  };
+
+  /** A video file dropped on the timeline goes into the library, then becomes the intro or outro. */
+  const uploadBookend = async (slot: BookendSlot, file: File) => {
+    const problem =
+      libraryFileError(file) ??
+      (LIBRARY_TYPES[file.type]?.kind === "video"
+        ? null
+        : `${file.name}: the ${slot} has to be a video (MP4, MOV or WebM)`);
+    if (problem) return fail(problem);
+    const label = SLOT_LABEL[slot].toLowerCase();
+    try {
+      setNotice({ tone: "info", text: `Uploading the ${label}...` });
+      const item = await uploadLibraryFile(file, libraryNameOf(file), (fraction) =>
+        setNotice({ tone: "info", text: `Uploading the ${label}: ${Math.round(fraction * 100)}%` }),
+      );
+      library.upsert(item);
+      pickers.current.setBookend(slot, item.file);
+      setNotice({ tone: "info", text: `${SLOT_LABEL[slot]} set to "${item.name}".` });
+    } catch (e) {
+      fail(`Could not add the ${label}: ${errorMessage(e)}`);
+    }
+  };
+
+  // The picker and the upload call back later, so they go through the ref and see the playhead and items of that moment.
+  const pickers = useRef({ addSticker, addSound, setBookend });
   useLayoutEffect(() => {
-    pickers.current = { addSticker, addSound };
+    pickers.current = { addSticker, addSound, setBookend };
   });
 
-  const selectedItem = items.find((i) => i.id === selected) ?? null;
-  const hasSelection = selectedItem !== null || (selected === TEASER_ID && teaser !== null);
+  const sel = useMemo(() => new Set(selected), [selected]);
+  const selItems = items.filter((i) => sel.has(i.id));
+  const teaserSelected = selected.length === 1 && selected[0] === TEASER_ID && teaser !== null;
+  const bookendSelected: BookendSlot | null =
+    selected.length === 1 && selected[0] === INTRO_ID && introFile
+      ? "intro"
+      : selected.length === 1 && selected[0] === OUTRO_ID && outroFile
+        ? "outro"
+        : null;
+  const hasSelection = selItems.length > 0 || teaserSelected || bookendSelected !== null;
 
   const remove = () => {
-    if (selected === TEASER_ID) commit({ items, teaser: null });
-    else if (selectedItem) commit({ items: items.filter((i) => i.id !== selectedItem.id), teaser });
+    if (bookendSelected) return setBookend(bookendSelected, null);
+    if (teaserSelected) commit({ items, teaser: null });
+    else if (selItems.length > 0) commit({ items: items.filter((i) => !sel.has(i.id)), teaser });
     else return;
     setNotice(null);
-    onSelect(null);
+    onSelect([]);
   };
 
   const duplicate = () => {
-    if (!selectedItem) return;
-    const len = selectedItem.end - selectedItem.start;
-    const placed = placeItem(items, selectedItem.kind, selectedItem.end, len, clipSpan, clip.start);
-    if (typeof placed === "string") return fail(placed);
-    const id = newItemId(items);
-    const copy: TimelineItem =
-      selectedItem.kind === "overlay"
-        ? { ...selectedItem, ...placed, id, element: { ...selectedItem.element, id } }
-        : { ...selectedItem, ...placed, id };
+    if (selItems.length === 0) return;
+    const copies = duplicateItems(items, sel, clipSpan);
+    if (typeof copies === "string") return fail(copies);
     setNotice(null);
-    commit({ items: [...items, copy], teaser });
-    onSelect(id);
+    commit({ items: copies.items, teaser });
+    onSelect(copies.copies);
   };
 
-  /** The teaser comes from the dragged range, else from the selected item, else 2 s at the playhead. */
+  /** The teaser comes from the dragged range, else from the selected items, else 2 s at the playhead. */
   const setTeaser = () => {
-    const want: Span = range ?? (selectedItem ? selectedItem : { start: playhead, end: playhead + 2 });
+    const want: Span =
+      range ??
+      (selItems.length > 0
+        ? { start: Math.min(...selItems.map((i) => i.start)), end: Math.max(...selItems.map((i) => i.end)) }
+        : { start: playhead, end: playhead + 2 });
     const next = teaserFrom(want, clipSpan);
     setNotice(null);
     commit({ items, teaser: next });
-    onSelect(TEASER_ID);
+    onSelect([TEASER_ID]);
     setRange(null);
   };
 
   const nudge = (delta: number) => {
-    const id = selected;
-    if (!id) return;
-    const current = id === TEASER_ID ? teaser : selectedItem;
-    if (!current) return;
-    const dur = current.end - current.start;
-    const start = round3(clamp(current.start + delta, clip.start, Math.max(clip.start, clip.end - dur)));
-    const span = { start, end: round3(start + dur) };
-    const problem = problemOf(id, span);
-    if (problem) return fail(problem);
+    if (teaserSelected && teaser) {
+      const dur = teaser.end - teaser.start;
+      const start = round3(clamp(teaser.start + delta, clip.start, Math.max(clip.start, clip.end - dur)));
+      const span = { start, end: round3(start + dur) };
+      const problem = problemOf(TEASER_ID, span);
+      if (problem) return fail(problem);
+      setNotice(null);
+      commit({ items, teaser: span });
+      return;
+    }
+    if (selItems.length === 0) return;
+    const moved = shiftItems(items, sel, delta, clipSpan, library.byFile);
+    if (typeof moved === "string") return fail(moved);
+    if (moved.delta === 0) return;
     setNotice(null);
-    commit(
-      id === TEASER_ID
-        ? { items, teaser: span }
-        : { items: items.map((i) => (i.id === id ? { ...i, ...span } : i)), teaser },
-    );
+    commit({ items: moved.items, teaser });
   };
 
   const runAi = async (replace: boolean) => {
@@ -416,7 +730,7 @@ export function Timeline({
     try {
       await flushAll();
       applyProject(await api.autoEdit(project.id, clip.id, replace));
-      onSelect(null);
+      onSelect([]);
       setNotice({ tone: "info", text: replace ? "AI edit applied." : "AI items added." });
     } catch (e) {
       setNotice({ tone: "error", text: `AI edit failed: ${errorMessage(e)}` });
@@ -427,21 +741,54 @@ export function Timeline({
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     const target = e.target as HTMLElement;
-    if (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName) || locked || ai) return;
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)) return;
+    const mod = e.metaKey || e.ctrlKey;
+    if (e.key === "Escape") {
+      if (selected.length > 0 || range) {
+        e.preventDefault();
+        setRange(null);
+        onSelect([]);
+      }
+      return;
+    }
+    if (mod && e.key.toLowerCase() === "a") {
+      e.preventDefault();
+      onSelect(items.map((i) => i.id));
+      return;
+    }
+    if (locked || ai) return;
     if ((e.key === "Delete" || e.key === "Backspace") && hasSelection) {
       e.preventDefault();
       remove();
-    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d" && selectedItem) {
+    } else if (mod && e.key.toLowerCase() === "d" && selItems.length > 0) {
       e.preventDefault();
       duplicate();
     } else if (
       (e.key === "ArrowLeft" || e.key === "ArrowRight") &&
       hasSelection &&
-      target.dataset.block !== undefined
+      (target.dataset.block !== undefined || target === e.currentTarget)
     ) {
       e.preventDefault();
       nudge((e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 0.5 : 0.05));
     }
+  };
+
+  // --- dropping a video file on the start or end of the timeline ------------------------------------------------------
+
+  const onDragOver = (e: DragEvent<HTMLElement>) => {
+    if (!e.dataTransfer.types.includes("Files") || locked || ai) return;
+    e.preventDefault();
+    setDrop(zoneAt(e));
+  };
+  const onDragLeave = (e: DragEvent<HTMLElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrop(null);
+  };
+  const onDrop = (e: DragEvent<HTMLElement>) => {
+    if (!e.dataTransfer.types.includes("Files") || locked || ai) return;
+    e.preventDefault();
+    setDrop(null);
+    const file = e.dataTransfer.files[0];
+    if (file) void uploadBookend(zoneAt(e), file);
   };
 
   // --- layout of the rows --------------------------------------------------------------------------------------------
@@ -453,28 +800,31 @@ export function Timeline({
       const of = assignLanes(inTrack);
       result.set(track.id, { of, count: Math.max(1, ...[...of.values()].map((l) => l + 1)) });
     }
-    result.set("teaser", { of: new Map(), count: 1 });
     return result;
   }, [items]);
+  const rowHeight = (id: TrackId) => (id === "media" ? MEDIA_HEIGHT : (lanes.get(id)?.count ?? 1) * LANE_HEIGHT + 4);
 
   const outside = items.filter((i) => i.end <= clip.start || i.start >= clip.end).length;
   const step = pps > 0 ? tickStep(pps) : 1;
-  const ticks = pps > 0 ? Array.from({ length: Math.floor(length / step) + 1 }, (_, i) => i * step) : [];
-  const px = (t: number) => (t - clip.start) * pps;
+  const ticks: number[] = [];
+  if (pps > 0)
+    for (let k = Math.ceil((-lead - 1e-9) / step); k * step <= length + tail + 1e-9; k++) ticks.push(round3(k * step));
+  const px = (t: number) => (t - axisStart) * pps;
 
   const renderBlock = (id: string, kind: BlockKind, label: string, span: Span, lane: number) => {
-    const shown = drag?.id === id ? drag.span : span;
+    const shown = drag?.get(id) ?? span;
     const from = Math.max(shown.start, clip.start);
     const to = Math.min(shown.end, clip.end);
     if (to <= from) return null;
     const Icon = ICONS[kind];
-    const isSelected = selected === id;
+    const isSelected = sel.has(id);
     return (
       <div
         key={id}
         role="button"
         tabIndex={0}
         data-block=""
+        data-item-id={id === TEASER_ID ? undefined : id}
         data-testid={`block-${id}`}
         aria-pressed={isSelected}
         aria-label={`${label}, ${(shown.start - clip.start).toFixed(2)} to ${(shown.end - clip.start).toFixed(2)} seconds`}
@@ -483,7 +833,8 @@ export function Timeline({
         onPointerMove={moveDrag}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        onFocus={() => !isSelected && onSelect(id)}
+        // Only keyboard focus selects; a pointer press has already decided what is selected.
+        onFocus={(e) => !isSelected && e.currentTarget.matches(":focus-visible") && onSelect([id])}
         className={cn(
           "absolute flex cursor-grab touch-none items-center gap-1 overflow-hidden rounded border px-1.5 text-[11px] leading-none font-medium select-none active:cursor-grabbing",
           BLOCK_CLASS[kind],
@@ -504,6 +855,41 @@ export function Timeline({
     );
   };
 
+  const renderBookend = (slot: BookendSlot) => {
+    const file = clip.settings[slot];
+    if (!file) return null;
+    const id = slot === "intro" ? INTRO_ID : OUTRO_ID;
+    const span = slot === "intro" ? lead : tail;
+    const info = library.byFile.get(file);
+    return (
+      <BookendBlock
+        key={id}
+        slot={slot}
+        file={file}
+        name={info?.name ?? "Missing from the library"}
+        length={info?.duration ?? null}
+        left={slot === "intro" ? px(clip.start - lead) : px(clip.end)}
+        width={span * pps}
+        selected={sel.has(id)}
+        onPointerDown={(e) => {
+          e.stopPropagation();
+          onSelect([id]);
+          onShowPreview();
+          scrubDown(e);
+        }}
+        onPointerMove={scrubMove}
+        onPointerUp={scrubUp}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          onSelect([id]);
+          onShowPreview();
+          player.seekBookend(slot, 0);
+        }}
+        onFocus={(e) => !sel.has(id) && e.currentTarget.matches(":focus-visible") && onSelect([id])}
+      />
+    );
+  };
+
   const toolButton = (kind: PlainKind, label: string, Icon: typeof ZoomIn, title: string) => (
     <Button key={kind} small onClick={() => addPlain(kind)} title={title}>
       <Icon className="size-3.5" aria-hidden /> {label}
@@ -511,13 +897,16 @@ export function Timeline({
   );
 
   const busy = ai !== null;
+  const headX = (headAt - axisStart) * pps;
 
   return (
     // Keys bubble up from the focusable blocks; the section itself is not a control.
     // oxlint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- see above
     <section
+      ref={sectionRef}
       aria-label="Timeline"
-      className="rounded-lg border border-zinc-800 bg-zinc-900"
+      tabIndex={-1}
+      className="rounded-lg border border-zinc-800 bg-zinc-900 focus-visible:outline-none!"
       onKeyDown={onKeyDown}
       data-testid="timeline"
     >
@@ -548,15 +937,42 @@ export function Timeline({
         </fieldset>
         <span className="hidden h-5 w-px bg-zinc-700 md:block" aria-hidden />
         <fieldset disabled={locked || busy} className="flex flex-wrap items-center gap-1.5 disabled:opacity-60">
+          <legend className="sr-only">Intro and outro video</legend>
+          <Button
+            small
+            onClick={() =>
+              library.open({ kind: "video", onPick: (item) => pickers.current.setBookend("intro", item.file) })
+            }
+            title="Intro video before the clip: pick or upload from the library (or drop a video on the left half of the timeline)"
+          >
+            <ArrowLeftToLine className="size-3.5" aria-hidden /> Intro
+          </Button>
+          <Button
+            small
+            onClick={() =>
+              library.open({ kind: "video", onPick: (item) => pickers.current.setBookend("outro", item.file) })
+            }
+            title="Outro video after the clip: pick or upload from the library (or drop a video on the right half of the timeline)"
+          >
+            <ArrowRightToLine className="size-3.5" aria-hidden /> Outro
+          </Button>
+        </fieldset>
+        <span className="hidden h-5 w-px bg-zinc-700 md:block" aria-hidden />
+        <fieldset disabled={locked || busy} className="flex flex-wrap items-center gap-1.5 disabled:opacity-60">
           <legend className="sr-only">Edit the selection</legend>
-          <Button small onClick={duplicate} disabled={!selectedItem} title="Duplicate the selected item (Ctrl/Cmd+D)">
+          <Button
+            small
+            onClick={duplicate}
+            disabled={selItems.length === 0}
+            title="Duplicate the selected items (Ctrl/Cmd+D)"
+          >
             <Copy className="size-3.5" aria-hidden /> Duplicate
           </Button>
           <Button
             small
             onClick={remove}
             disabled={!hasSelection}
-            title="Delete the selected item (Delete)"
+            title="Delete the selection (Delete)"
             className="text-red-300"
           >
             <Trash2 className="size-3.5" aria-hidden /> Delete
@@ -564,7 +980,7 @@ export function Timeline({
           <Button
             small
             onClick={setTeaser}
-            title="Teaser: a 0.5-4 s replay of the finished clip played first. Uses the range you drag on the tracks, else the selected item, else 2 s at the playhead."
+            title="Teaser: a 0.5-4 s replay of the finished clip played first. Uses the range you drag on the tracks, else the selected items, else 2 s at the playhead."
           >
             <Flag className="size-3.5" aria-hidden /> Set teaser
           </Button>
@@ -595,6 +1011,7 @@ export function Timeline({
           </Button>
         </fieldset>
         <span className="text-xs text-zinc-400 tabular-nums">
+          {selItems.length > 1 && `${selItems.length} selected · `}
           {items.length}/{MAX_TIMELINE_ITEMS}
         </span>
       </header>
@@ -607,14 +1024,22 @@ export function Timeline({
               <div
                 key={track.id}
                 className="flex items-center border-t border-zinc-800 pr-2 text-xs font-medium text-zinc-400"
-                style={{ height: (lanes.get(track.id)?.count ?? 1) * LANE_HEIGHT + 4 }}
+                style={{ height: rowHeight(track.id) }}
               >
                 {track.label}
               </div>
             ))}
           </div>
 
-          <div ref={areaRef} className="relative min-w-0 flex-1">
+          {/* Dropping a video file on the left half sets the intro, on the right half the outro. */}
+          {/* oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- a pointer-only drop target; the toolbar buttons are the keyboard path */}
+          <div
+            ref={areaRef}
+            className="relative min-w-0 flex-1"
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+          >
             {/* oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- the ruler is a pointer scrubber; the slider under the preview is the keyboard path */}
             <div
               onPointerDown={scrubDown}
@@ -625,11 +1050,23 @@ export function Timeline({
               style={{ height: RULER_HEIGHT }}
               data-testid="ruler"
             >
+              {lead > 0 && (
+                <span
+                  className="pointer-events-none absolute inset-y-0 left-0 bg-violet-500/20"
+                  style={{ width: lead * pps }}
+                />
+              )}
+              {tail > 0 && (
+                <span
+                  className="pointer-events-none absolute inset-y-0 bg-violet-500/20"
+                  style={{ left: px(clip.end), width: tail * pps }}
+                />
+              )}
               {ticks.map((t) => (
                 <span
                   key={t}
                   className="pointer-events-none absolute inset-y-0 border-l border-zinc-700 pl-1 text-[10px] leading-6 text-zinc-400 tabular-nums"
-                  style={{ left: t * pps }}
+                  style={{ left: px(clip.start + t) }}
                 >
                   {fmtTick(t)}
                 </span>
@@ -637,7 +1074,7 @@ export function Timeline({
             </div>
 
             {TRACKS.map((track) => {
-              const { of, count } = lanes.get(track.id)!;
+              const { of } = lanes.get(track.id)!;
               return (
                 // oxlint-disable-next-line jsx-a11y/no-static-element-interactions -- empty space seeks or selects a range; blocks are the keyboard path
                 <div
@@ -646,20 +1083,45 @@ export function Timeline({
                   onPointerDown={trackDown}
                   onPointerMove={trackMove}
                   onPointerUp={trackUp}
-                  onPointerCancel={() => (marquee.current = null)}
+                  onPointerCancel={() => {
+                    press.current = null;
+                    setBox(null);
+                  }}
                   className="relative touch-none border-t border-zinc-800 bg-zinc-950/50"
-                  style={{ height: count * LANE_HEIGHT + 4 }}
+                  style={{ height: rowHeight(track.id) }}
                 >
                   {ticks.map((t) => (
                     <span
                       key={t}
                       className="pointer-events-none absolute inset-y-0 border-l border-zinc-800/70"
-                      style={{ left: t * pps }}
+                      style={{ left: px(clip.start + t) }}
                     />
                   ))}
+                  {track.id === "media" && (
+                    <>
+                      {renderBookend("intro")}
+                      {renderBookend("outro")}
+                      {teaser && (
+                        <span
+                          className="pointer-events-none absolute z-[5] flex items-center gap-1 rounded-r border-l-2 border-amber-300 bg-amber-400/90 px-1.5 py-0.5 text-[10px] leading-none font-medium text-zinc-900"
+                          style={{ left: px(clip.start), top: (MEDIA_HEIGHT - 16) / 2 }}
+                        >
+                          <Flag className="size-2.5" aria-hidden /> Teaser {(teaser.end - teaser.start).toFixed(1)} s ·
+                          plays first
+                        </span>
+                      )}
+                      {!introFile && !outroFile && !teaser && (
+                        <span className="pointer-events-none absolute inset-0 flex items-center px-3 text-xs text-zinc-500">
+                          Intro and outro videos: use the toolbar buttons, or drop a video file on the left or right
+                          half of the timeline.
+                        </span>
+                      )}
+                    </>
+                  )}
                   {track.id === "teaser"
                     ? teaser && renderBlock(TEASER_ID, "teaser", "Teaser", teaser, 0)
-                    : items
+                    : track.id !== "media" &&
+                      items
                         .filter((i) => trackOf(i) === track.id)
                         .map((item) =>
                           renderBlock(
@@ -684,6 +1146,18 @@ export function Timeline({
               );
             })}
 
+            {lead > 0 && (
+              <div
+                className="pointer-events-none absolute inset-y-0 left-0 border-r border-dashed border-violet-300/60 bg-violet-400/5"
+                style={{ width: lead * pps }}
+              />
+            )}
+            {tail > 0 && (
+              <div
+                className="pointer-events-none absolute inset-y-0 border-l border-dashed border-violet-300/60 bg-violet-400/5"
+                style={{ left: px(clip.end), width: tail * pps }}
+              />
+            )}
             {range && (
               <div
                 className="pointer-events-none absolute inset-y-0 border-x border-white/50 bg-white/10"
@@ -691,9 +1165,30 @@ export function Timeline({
                 data-testid="range"
               />
             )}
+            {box && (
+              <div
+                className="pointer-events-none absolute z-30 border border-indigo-300 bg-indigo-400/20"
+                style={{
+                  left: Math.min(box.x0, box.x1),
+                  top: Math.min(box.y0, box.y1),
+                  width: Math.abs(box.x1 - box.x0),
+                  height: Math.abs(box.y1 - box.y0),
+                }}
+                data-testid="marquee"
+              />
+            )}
+            {drop && (
+              <div
+                className="pointer-events-none absolute inset-y-0 z-30 flex items-center justify-center border-2 border-dashed border-violet-300 bg-violet-500/25 text-xs font-medium text-white"
+                style={{ left: drop === "intro" ? 0 : "50%", width: "50%" }}
+                data-testid="drop-zone"
+              >
+                Drop a video to set the {drop}
+              </div>
+            )}
             <div
               className="pointer-events-none absolute inset-y-0 z-20 w-px bg-rose-400"
-              style={{ left: px(playhead) }}
+              style={{ left: headX }}
               data-testid="playhead"
             >
               <span className="absolute -top-px -left-1.5 size-3 rounded-b-full bg-rose-400" />
@@ -712,8 +1207,9 @@ export function Timeline({
           </p>
         ) : (
           <p className="text-zinc-500">
-            Click the ruler to seek. Drag blocks to move, their edges to resize (snaps to 0.05 s and the playhead). Drag
-            on empty track space to pick a range. Delete removes the selection.
+            Click the ruler to seek. Drag blocks to move (snaps to 0.05 s and the playhead), their edges to resize.
+            Shift/Cmd-click adds to the selection; Shift-drag on empty space draws a selection box; plain drag picks a
+            range for the teaser. Esc clears, Delete removes.
           </p>
         )}
         {outside > 0 && (

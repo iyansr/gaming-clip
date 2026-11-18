@@ -48,7 +48,7 @@ export function ClipList({
     <div className="flex flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <div role="group" aria-label="Sort clips" className="inline-flex rounded-md border border-zinc-700 p-0.5">
-          {(["time", "score"] as const).map((s) => (
+          {(["score", "time"] as const).map((s) => (
             <button
               key={s}
               type="button"
@@ -100,7 +100,7 @@ export function ClipList({
           )}
         </Empty>
       ) : (
-        <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] items-start gap-2 p-3" aria-label="Clips">
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] items-start gap-1.5 p-2" aria-label="Clips">
           {sorted.map((clip) => (
             <ClipCard
               key={clip.id}
@@ -140,13 +140,13 @@ function ClipCard({
         checked={clip.selected}
         onChange={(e) => onSelect(e.target.checked)}
         aria-label={`Select "${clip.title}" for rendering`}
-        className="absolute top-3 left-2.5 size-4"
+        className="absolute top-2.5 left-2.5 size-4"
       />
       <button
         type="button"
         onClick={onActivate}
         aria-current={active}
-        className="flex w-full flex-col gap-1.5 rounded-lg py-2.5 pr-3 pl-9 text-left"
+        className="flex w-full flex-col gap-1 rounded-lg py-2 pr-2.5 pl-9 text-left"
       >
         <span className="line-clamp-2 text-sm leading-snug font-medium text-zinc-100">
           {clip.title || "Untitled clip"}

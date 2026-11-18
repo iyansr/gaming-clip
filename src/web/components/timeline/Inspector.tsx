@@ -22,10 +22,12 @@ import {
   BLOCK_CLASS,
   blockKind,
   focusPoints,
+  INTRO_ID,
   itemLabel,
   itemProblem,
   LOOK_LABELS,
   maxLength,
+  OUTRO_ID,
   round3,
   VOICE_LABELS,
 } from "../../lib/timeline";
@@ -34,6 +36,9 @@ import { ColorField, Slider } from "../CustomLayoutPanel";
 import { useLibrary } from "../LibraryDialog";
 import { Button, inputClass, Panel } from "../ui";
 import { NumberField, TextField } from "../WatermarkPanel";
+import { BookendInspector } from "./BookendInspector";
+import { DecimalSlider, SecondsField, SelectField } from "./fields";
+import { MultiInspector } from "./MultiInspector";
 import { TEASER_ID } from "./Timeline";
 
 interface Props {
@@ -41,117 +46,22 @@ interface Props {
   clip: Clip;
   player: Player;
   edit: (clipId: string, patch: ClipEdit, immediate?: boolean) => void;
+  /** Ids of the selection: several items, or one item, the teaser, the intro or the outro. */
+  selected: string[];
+  onSelect: (ids: string[]) => void;
+}
+
+/** The panel for whatever is selected: the group tools, the intro/outro, or the fields of one item. */
+export function Inspector(props: Props) {
+  const { selected } = props;
+  if (selected.length > 1) return <MultiInspector {...props} />;
+  const id = selected[0] ?? null;
+  if (id === INTRO_ID || id === OUTRO_ID) return <BookendInspector {...props} slot={id} />;
+  return <ItemInspector {...props} selected={id} />;
+}
+
+interface ItemProps extends Omit<Props, "selected"> {
   selected: string | null;
-  onSelect: (id: string | null) => void;
-}
-
-/** Seconds field that commits a valid value on Enter or blur; `onCommit` returns why a value is refused. */
-function SecondsField({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string;
-  value: number;
-  onCommit: (seconds: number) => string | null;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const commit = () => {
-    const parsed = draft === null || draft.trim() === "" ? Number.NaN : Number(draft);
-    setDraft(null);
-    if (draft === null) return;
-    if (!Number.isFinite(parsed)) return setProblem("Enter a number of seconds");
-    const rounded = round3(parsed);
-    setProblem(rounded === round3(value) ? null : onCommit(rounded));
-  };
-  return (
-    <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-zinc-400">
-      {label} (s)
-      <input
-        type="text"
-        inputMode="decimal"
-        value={draft ?? String(round3(value))}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          if (e.key === "Escape") {
-            setDraft(null);
-            setProblem(null);
-          }
-        }}
-        aria-invalid={problem !== null}
-        className={cn(inputClass, "tabular-nums")}
-      />
-      {problem && (
-        <span role="alert" className="text-red-300">
-          {problem}
-        </span>
-      )}
-    </label>
-  );
-}
-
-/** Range slider with a decimal value (the shared Slider only does whole numbers). */
-function DecimalSlider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  format,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  format: (v: number) => string;
-  onChange: (v: number) => void;
-}) {
-  return (
-    <label className="flex flex-col gap-1 text-xs text-zinc-400">
-      <span className="flex justify-between">
-        <span>{label}</span>
-        <span className="text-zinc-200 tabular-nums">{format(value)}</span>
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </label>
-  );
-}
-
-function SelectField<T extends string>({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-}) {
-  return (
-    <label className="flex flex-col gap-1 text-xs text-zinc-400">
-      {label}
-      <select value={value} onChange={(e) => onChange(e.target.value as T)} className={inputClass}>
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
 }
 
 const EASES: { value: ZoomEase; label: string }[] = [
@@ -168,7 +78,7 @@ const ANIMATIONS: { value: OverlayAnimation; label: string }[] = [
 ];
 
 /** Every field of the selected timeline item, with the limits the server enforces. */
-export function Inspector({ project, clip, player, edit, selected, onSelect }: Props) {
+function ItemInspector({ project, clip, player, edit, selected, onSelect }: ItemProps) {
   const library = useLibrary();
   const { items, teaser } = clip.timeline;
   const item = items.find((i) => i.id === selected) ?? null;
@@ -197,7 +107,7 @@ export function Inspector({ project, clip, player, edit, selected, onSelect }: P
     commit({ items: items.map((i) => (i.id === next.id ? next : i)), teaser }, immediate);
   const remove = () => {
     commit({ items: items.filter((i) => i.id !== selected), teaser: isTeaser ? null : teaser }, true);
-    onSelect(null);
+    onSelect([]);
   };
 
   /** Applies a new span to the item or the teaser after the same checks the timeline drag makes. */

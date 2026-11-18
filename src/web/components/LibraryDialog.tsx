@@ -13,7 +13,15 @@ import {
 
 import { LIBRARY_LIMITS, LIBRARY_TYPES } from "../../shared/library";
 import type { LibraryItem, LibraryKind } from "../../shared/types";
-import { api, errorMessage, libraryAccept, libraryFileError, media, uploadLibraryFile } from "../lib/api";
+import {
+  api,
+  errorMessage,
+  libraryAccept,
+  libraryFileError,
+  libraryNameOf,
+  media,
+  uploadLibraryFile,
+} from "../lib/api";
 import { cn } from "../lib/format";
 import { Button, inputClass, ProgressBar } from "./ui";
 
@@ -174,7 +182,7 @@ function LibraryBody({ options, onClose }: { options: LibraryOpenOptions; onClos
   const upload = async (files: File[]) => {
     for (const file of files) {
       const id = nextUpload.current++;
-      const name = file.name.replace(/\.[^.]+$/, "").slice(0, LIBRARY_LIMITS.nameLength) || "Untitled";
+      const name = libraryNameOf(file);
       const problem =
         libraryFileError(file) ??
         (options.kind && LIBRARY_TYPES[file.type]?.kind !== options.kind

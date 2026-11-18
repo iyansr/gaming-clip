@@ -16,7 +16,6 @@ import { cn, fmtSeconds, parseTime, round2, validateRange } from "../lib/format"
 import type { ClipEdit } from "../lib/hooks";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
-import { BookendsPanel } from "./BookendsPanel";
 import { CaptionGallery } from "./CaptionGallery";
 import { CustomLayoutPanel } from "./CustomLayoutPanel";
 import { SocialPanel } from "./SocialPanel";
@@ -309,8 +308,6 @@ export function SettingsPanel({
           applyProject={applyProject}
           onShowPreview={onShowPreview}
         />
-
-        <BookendsPanel clip={clip} edit={edit} />
       </fieldset>
 
       <ThumbnailPanel

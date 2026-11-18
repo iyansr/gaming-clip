@@ -218,3 +218,14 @@ export function drawFlashes(ctx: CanvasRenderingContext2D, items: TimelineItem[]
   }
   ctx.globalAlpha = 1;
 }
+
+/** Paints an intro/outro video cover-fit over the whole frame, like the renderer scales it; black until it has a frame. */
+export function drawCover(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, output: Size): void {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, output.width, output.height);
+  if (video.readyState < 2 || video.videoWidth === 0) return;
+  const scale = Math.max(output.width / video.videoWidth, output.height / video.videoHeight);
+  const w = video.videoWidth * scale;
+  const h = video.videoHeight * scale;
+  ctx.drawImage(video, (output.width - w) / 2, (output.height - h) / 2, w, h);
+}

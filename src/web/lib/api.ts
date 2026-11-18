@@ -184,6 +184,11 @@ export function libraryFileError(file: File): string | null {
   return null;
 }
 
+/** The library name an uploaded file gets by default: its file name without the extension. */
+export function libraryNameOf(file: File): string {
+  return file.name.replace(/\.[^.]+$/, "").slice(0, LIBRARY_LIMITS.nameLength) || "Untitled";
+}
+
 /** Uploads one library file; the server probes it and answers with the stored item. */
 export function uploadLibraryFile(
   file: File,

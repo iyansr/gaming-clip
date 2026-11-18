@@ -19,6 +19,7 @@ import { clamp, cn, floor1, fmtTime } from "../lib/format";
 import { useCaptionFonts, useClipEdits, useProjectStream, useTranscriptWords } from "../lib/hooks";
 import { Player } from "../lib/player";
 import { Link } from "../lib/router";
+import { INTRO_ID, OUTRO_ID } from "../lib/timeline";
 import { useToast } from "../lib/toast";
 
 export function ProjectPage({ id }: { id: string }) {
@@ -64,14 +65,14 @@ function ProjectView({
   const fonts = useCaptionFonts();
   const { words, error: transcriptError } = useTranscriptWords(project.id, project.stages.transcribe.status === "done");
 
-  const [sort, setSort] = useState<ClipSort>("time");
+  const [sort, setSort] = useState<ClipSort>("score");
   const [tab, setTab] = useState<"clips" | "rendered">("clips");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [view, setView] = useState<{ clipId: string; mode: PreviewMode } | null>(null);
   const [webcamOpen, setWebcamOpen] = useState(false);
   const [customUi, setCustomUi] = useState<CustomUi>({ selected: "cam", lockAspect: true });
   const [watermarkId, setSelectedWatermark] = useState<string | null>(null);
-  const [itemSel, setItemSel] = useState<{ clipId: string; id: string } | null>(null);
+  const [itemSel, setItemSel] = useState<{ clipId: string; ids: string[] } | null>(null);
   const configColumn = useRef<HTMLElement>(null);
 
   const source = project.source;
@@ -167,17 +168,34 @@ function ProjectView({
   const rendered = clips.filter((c) => c.render.status === "done" && c.render.file);
   const activeView = view && active && view.clipId === active.id ? view.mode : "preview";
 
-  /** The selection only counts while the active clip still has that item (or a teaser). */
-  const selectedItem =
-    active &&
-    itemSel?.clipId === active.id &&
-    (active.timeline.items.some((i) => i.id === itemSel.id) || (itemSel.id === TEASER_ID && active.timeline.teaser))
-      ? itemSel.id
-      : null;
-  const selectItem = (id: string | null) => {
-    setItemSel(active && id ? { clipId: active.id, id } : null);
-    configColumn.current?.scrollTo({ top: 0 });
+  /** The selection only counts for ids the active clip still has: items, the teaser, the intro and the outro. */
+  const selection =
+    active && itemSel?.clipId === active.id
+      ? itemSel.ids.filter(
+          (id) =>
+            active.timeline.items.some((i) => i.id === id) ||
+            (id === TEASER_ID && active.timeline.teaser !== null) ||
+            (id === INTRO_ID && active.settings.intro !== null) ||
+            (id === OUTRO_ID && active.settings.outro !== null),
+        )
+      : [];
+  /** What the preview's on-canvas boxes follow: one selected item or the teaser. */
+  const selectedItem = selection.length === 1 ? selection[0]! : null;
+  const selectItems = (ids: string[]) => {
+    setItemSel(active && ids.length > 0 ? { clipId: active.id, ids } : null);
+    if (ids.length > 0) configColumn.current?.scrollTo({ top: 0 });
   };
+  const selectItem = (id: string | null) => selectItems(id ? [id] : []);
+
+  // The intro and outro play in the preview around the clip.
+  const introFile = active?.settings.intro ?? null;
+  const outroFile = active?.settings.outro ?? null;
+  useEffect(() => {
+    player?.setBookends({
+      intro: introFile ? media.library(introFile) : null,
+      outro: outroFile ? media.library(outroFile) : null,
+    });
+  }, [player, introFile, outroFile]);
 
   useEffect(() => {
     if (!player) return;
@@ -214,10 +232,10 @@ function ProjectView({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto lg:overflow-hidden">
-          {/* Wide: left column (preview, timeline, highlights) + a fixed settings column, each scrolling on its own.
-              Narrow: one column in the order preview, timeline, settings, highlights (the left wrapper `contents`). */}
-          <div className="grid gap-4 p-3 lg:h-full lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-0 lg:p-0">
-            <main className="contents lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:p-4">
+          {/* Wide: highlights | preview + timeline | settings, each column scrolling on its own.
+              Narrow: one column in the order preview, timeline, settings, highlights (`main` is `contents`). */}
+          <div className="grid gap-4 p-3 lg:h-full lg:grid-cols-[320px_minmax(0,1fr)_360px] lg:grid-rows-[minmax(0,1fr)] lg:gap-0 lg:p-0">
+            <main className="contents lg:col-start-2 lg:row-start-1 lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:p-4">
               {active ? (
                 <>
                   <div className="order-1 flex-none justify-self-center lg:order-none lg:self-center">
@@ -249,8 +267,8 @@ function ProjectView({
                       edit={edit}
                       flushAll={flushAll}
                       applyProject={applyProject}
-                      selected={selectedItem}
-                      onSelect={selectItem}
+                      selected={selection}
+                      onSelect={selectItems}
                       onShowPreview={() => setView({ clipId: active.id, mode: "preview" })}
                     />
                   </div>
@@ -272,73 +290,73 @@ function ProjectView({
                   </Empty>
                 </div>
               )}
-
-              {/* Highlights: picking one loads it into the preview, timeline and settings. */}
-              <section
-                aria-label="Highlights"
-                data-clip-list=""
-                className="order-4 flex-none overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 lg:order-none lg:max-h-[26rem] lg:overflow-y-auto"
-              >
-                <div
-                  role="tablist"
-                  aria-label="Clip lists"
-                  className="sticky top-0 z-10 flex border-b border-zinc-800 bg-zinc-950"
-                >
-                  {(
-                    [
-                      ["clips", `Highlights (${clips.length})`],
-                      ["rendered", `Rendered (${rendered.length})`],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <button
-                      key={key}
-                      role="tab"
-                      type="button"
-                      aria-selected={tab === key}
-                      onClick={() => setTab(key)}
-                      className={cn(
-                        "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
-                        tab === key
-                          ? "border-indigo-400 text-white"
-                          : "border-transparent text-zinc-400 hover:text-zinc-200",
-                      )}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {tab === "clips" ? (
-                  <ClipList
-                    project={project}
-                    clips={clips}
-                    activeId={active?.id ?? null}
-                    sort={sort}
-                    onSortChange={setSort}
-                    onActivate={setActiveId}
-                    onSelect={(clipId, selected) => edit(clipId, { selected }, true)}
-                    onSelectAll={(selected) => {
-                      for (const c of clips) if (c.selected !== selected) edit(c.id, { selected }, true);
-                    }}
-                    onAdd={() => void addClip()}
-                  />
-                ) : (
-                  <RenderedGallery
-                    project={project}
-                    clips={rendered}
-                    onPlay={(clip) => {
-                      setActiveId(clip.id);
-                      setView({ clipId: clip.id, mode: "rendered" });
-                    }}
-                  />
-                )}
-              </section>
             </main>
+
+            {/* Highlights: picking one loads it into the preview, timeline and settings. */}
+            <section
+              aria-label="Highlights"
+              data-clip-list=""
+              className="order-4 flex-none overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 lg:order-none lg:col-start-1 lg:row-start-1 lg:min-h-0 lg:overflow-y-auto lg:rounded-none lg:border-0 lg:border-r"
+            >
+              <div
+                role="tablist"
+                aria-label="Clip lists"
+                className="sticky top-0 z-10 flex border-b border-zinc-800 bg-zinc-950"
+              >
+                {(
+                  [
+                    ["clips", `Highlights (${clips.length})`],
+                    ["rendered", `Rendered (${rendered.length})`],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    role="tab"
+                    type="button"
+                    aria-selected={tab === key}
+                    onClick={() => setTab(key)}
+                    className={cn(
+                      "border-b-2 px-4 py-2 text-sm font-medium transition-colors",
+                      tab === key
+                        ? "border-indigo-400 text-white"
+                        : "border-transparent text-zinc-400 hover:text-zinc-200",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {tab === "clips" ? (
+                <ClipList
+                  project={project}
+                  clips={clips}
+                  activeId={active?.id ?? null}
+                  sort={sort}
+                  onSortChange={setSort}
+                  onActivate={setActiveId}
+                  onSelect={(clipId, selected) => edit(clipId, { selected }, true)}
+                  onSelectAll={(selected) => {
+                    for (const c of clips) if (c.selected !== selected) edit(c.id, { selected }, true);
+                  }}
+                  onAdd={() => void addClip()}
+                />
+              ) : (
+                <RenderedGallery
+                  project={project}
+                  clips={rendered}
+                  onPlay={(clip) => {
+                    setActiveId(clip.id);
+                    setView({ clipId: clip.id, mode: "rendered" });
+                  }}
+                />
+              )}
+            </section>
 
             {active && (
               <aside
                 ref={configColumn}
                 aria-label="Settings"
-                className="compact order-3 flex min-w-0 flex-col gap-2 lg:order-none lg:min-h-0 lg:overflow-y-auto lg:border-l lg:border-zinc-800 lg:bg-zinc-950 lg:p-2.5"
+                className="compact order-3 flex min-w-0 flex-col gap-2 lg:order-none lg:col-start-3 lg:row-start-1 lg:min-h-0 lg:overflow-y-auto lg:border-l lg:border-zinc-800 lg:bg-zinc-950 lg:p-2.5"
                 data-testid="config-column"
               >
                 <Inspector
@@ -346,8 +364,8 @@ function ProjectView({
                   clip={active}
                   player={player}
                   edit={edit}
-                  selected={selectedItem}
-                  onSelect={selectItem}
+                  selected={selection}
+                  onSelect={selectItems}
                 />
                 <SettingsPanel
                   key={active.id}
