@@ -16,6 +16,16 @@ const REQUEST_TIMEOUT_MS = 120_000;
 /** A headless coding-agent CLI starts a whole session per call, so it gets more time than an API call. */
 const COMMAND_TIMEOUT_MS = 300_000;
 const BODY_EXCERPT = 300;
+/**
+ * Output budget of one endpoint call. Anvia's Anthropic client defaults to 1024 tokens, which cuts an AI edit
+ * (a dozen timeline items with Indonesian text) or a long highlight list mid-JSON. 8192 fits every current model.
+ */
+const MAX_OUTPUT_TOKENS = 8192;
+
+/** The model stopped at the output limit: the JSON is incomplete, and asking again gives the same cut. */
+export class LlmTruncatedError extends Error {
+  override name = "LlmTruncatedError";
+}
 
 /** Models wrap JSON in a code fence or a sentence of prose; take the fenced or outermost object. */
 function parseJsonAnswer(text: string): unknown {
@@ -124,6 +134,13 @@ async function askEndpoint(messages: ChatMessage[], signal?: AbortSignal): Promi
     abortSignal: signal
       ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
       : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    maxTokens: MAX_OUTPUT_TOKENS,
+  };
+  const complete = async (model: Parameters<typeof generateCompletion>[0]["model"]): Promise<string> => {
+    const result = await generateCompletion({ ...request, model });
+    if (result.finishReason === "length")
+      throw new LlmTruncatedError(`The AI answer was cut off at the ${MAX_OUTPUT_TOKENS}-token output limit`);
+    return result.text;
   };
   try {
     if (llm.provider === "anthropic") {
@@ -139,15 +156,11 @@ async function askEndpoint(messages: ChatMessage[], signal?: AbortSignal): Promi
             }),
           })
         : new AnthropicClient(client);
-      return (await generateCompletion({ ...request, model: anthropic.completionModel({ modelId: llm.model }) })).text;
+      return await complete(anthropic.completionModel({ modelId: llm.model }));
     }
-    return (
-      await generateCompletion({
-        ...request,
-        model: new OpenAIClient(client).completionModel({ modelId: llm.model, api: "chat" }),
-      })
-    ).text;
+    return await complete(new OpenAIClient(client).completionModel({ modelId: llm.model, api: "chat" }));
   } catch (error) {
+    if (error instanceof LlmTruncatedError) throw error;
     if (signal?.aborted) throw error;
     if (request.abortSignal.aborted)
       throw new Error(`LLM request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`, { cause: error });

@@ -26,7 +26,7 @@ import {
 } from "../shared/types";
 import { projectPaths } from "./config";
 import { listLibrary } from "./library";
-import { chatJson, type ChatMessage } from "./llm";
+import { chatJson, type ChatMessage, LlmTruncatedError } from "./llm";
 import { parseTimeline, patchClip } from "./pipeline";
 import { DEFAULT_EDIT_GUIDANCE } from "./prompts";
 import { llmConfigured } from "./settings";
@@ -737,7 +737,9 @@ export async function generateEdit(
         try {
           planned = timelineFromAnswer(await chatJson(messages, signal), input);
         } catch (error) {
-          if (!(error instanceof EditFormatError)) throw error;
+          // Unusable answers (bad shape, broken or cut-off JSON) fall through to the heuristic edit below.
+          if (!(error instanceof EditFormatError || error instanceof SyntaxError || error instanceof LlmTruncatedError))
+            throw error;
         }
       }
     }
