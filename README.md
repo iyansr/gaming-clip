@@ -117,11 +117,13 @@ Everything lands in `workspace/projects/<id>/clips/` (use the `GCLIP_WORKSPACE` 
 
 ```text
 workspace/projects/<id>/
-  project.json                  all state of the project: stages, clips, settings
+  project.json                  all state of the project: stages, clips, settings, timeline
   source.mp4                    the downloaded (or converted) video
   transcript.json               timed words
   clips/<clipId>-<title>.mp4    the short: 1080x1920, H.264 + AAC
   clips/<clipId>-<title>.jpg    its cover image, 1080x1920
+workspace/library/              user uploads shared by every project: sounds, stickers, intro/outro videos
+  library.json                  their names and probes (duration, size)
 ```
 
 ## Settings dialog
@@ -201,14 +203,20 @@ Exit codes: `0` ok, `1` failure, `2` usage error. Times are seconds (`83.5`) or 
 
 **Clips and look**
 
-| Command                                                                                                                                                                                                                  | Purpose                                                                           |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `clip clips set <id> <file.json>`                                                                                                                                                                                        | Replace all non-manual clips with picks from `[{start,end,title,reason?,score?}]` |
-| `clip clips add <id> <start> <end> [title]`                                                                                                                                                                              | Add a manual clip                                                                 |
-| `clip clips rm <id> <clipId>`                                                                                                                                                                                            | Remove a clip                                                                     |
-| `clip clips select <id> <clipId,...\|all\|none>`                                                                                                                                                                         | Choose which clips render                                                         |
-| `clip webcam <id> [--detect \| --none \| --rect x,y,w,h]`                                                                                                                                                                | Detect again, mark "no webcam", or set the rectangle in source pixels             |
-| `clip settings <id> [--clips a,b\|all] [--layout split\|fill\|fit\|custom] [--custom-json <file>] [--subtitles on\|off] [--style <id>] [--caption-y 0..1] [--focus-x 0..1] [--watermarks-json <file>] [--no-watermarks]` | Layout and caption settings. Without `--clips` it changes the project defaults    |
+| Command                                                                                                                                                                                                                                                                | Purpose                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clip clips set <id> <file.json>`                                                                                                                                                                                                                                      | Replace all non-manual clips with picks from `[{start,end,title,reason?,score?}]`                                                                                                        |
+| `clip clips add <id> <start> <end> [title]`                                                                                                                                                                                                                            | Add a manual clip                                                                                                                                                                        |
+| `clip clips rm <id> <clipId>`                                                                                                                                                                                                                                          | Remove a clip                                                                                                                                                                            |
+| `clip clips select <id> <clipId,...\|all\|none>`                                                                                                                                                                                                                       | Choose which clips render                                                                                                                                                                |
+| `clip webcam <id> [--detect \| --none \| --rect x,y,w,h]`                                                                                                                                                                                                              | Detect again, mark "no webcam", or set the rectangle in source pixels                                                                                                                    |
+| `clip settings <id> [--clips a,b\|all] [--layout split\|fill\|fit\|custom] [--custom-json <file>] [--subtitles on\|off] [--style <id>] [--caption-y 0..1] [--focus-x 0..1] [--watermarks-json <file>] [--no-watermarks] [--intro <file\|none>] [--outro <file\|none>]` | Layout and caption settings. Without `--clips` it changes the project defaults. `--intro`/`--outro` play a library video before or after the clip                                        |
+| `clip timeline <id> <clipId> <timeline.json>`                                                                                                                                                                                                                          | Replace the clip's editor timeline: zooms, shakes, flashes, looks, text/sticker overlays, sounds, voice effects and the hook teaser (whole `{"items":[...],"teaser":{start,end}\|null}`) |
+| `clip autoedit <id> [--clips a,b\|all] [--append]`                                                                                                                                                                                                                     | Fill the timeline with the AI edit (Highlight AI when configured, else heuristics). Default: selected clips. `--append` keeps the existing items and teaser instead of replacing them    |
+| `clip library list`                                                                                                                                                                                                                                                    | Sounds, stickers and videos shared by every project                                                                                                                                      |
+| `clip library add <file> [--name N]`                                                                                                                                                                                                                                   | Upload a file; type comes from its extension (mp3, wav, ogg, m4a, png, jpg, webp, mp4, mov, webm)                                                                                        |
+| `clip library rm <file>`                                                                                                                                                                                                                                               | Delete an upload; refused (409) while a clip or the project defaults use it                                                                                                              |
+| `clip library rename <file> <name>`                                                                                                                                                                                                                                    | Rename an upload (the file stays)                                                                                                                                                        |
 
 **Output**
 
@@ -219,6 +227,19 @@ Exit codes: `0` ok, `1` failure, `2` usage error. Times are seconds (`83.5`) or 
 | `clip social <id> [--clips a,b\|all] [--language xx]`                                                                              | Write Instagram, TikTok and YouTube Shorts post text (caption or title, description, hashtags) with the Highlight AI and store it on each clip. Default: selected clips; language: the video's, or a code such as `en` or `id` |
 
 `bun run clip` is the same as `bun src/cli.ts`; the `clip` in the tables stands for either.
+
+### Editor API
+
+The web editor drives the same operations over HTTP; errors come back as `{error}` with 400, 404, 409 or 413.
+
+| Route                                           | Purpose                                                                                                                                     |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/library`                              | Library items, newest first                                                                                                                 |
+| `POST /api/library?name=<name>`                 | Upload a raw body; the Content-Type decides the kind and the limit (413 over it). 201 with the item                                         |
+| `PATCH /api/library/:file`, `DELETE`            | Rename `{name}`; delete (409 while a clip or project defaults use it)                                                                       |
+| `GET /media/library/:file`                      | The file itself (Range supported)                                                                                                           |
+| `PATCH /api/projects/:id/clips/:clipId`         | Accepts `timeline` (whole `ClipTimeline`) and `settings.intro`/`settings.outro`; a timeline change invalidates the render but not the cover |
+| `POST /api/projects/:id/clips/:clipId/autoedit` | `{replace?: boolean}` -> the edited project (AI edit)                                                                                       |
 
 ### Worked examples
 
@@ -325,8 +346,8 @@ gaming-clip does not host, distribute or index any content: everything happens o
 src/
   cli.ts          the clip CLI
   shared/         types, layout geometry, caption and thumbnail styles, webcam mask; used by browser and renderer
-  core/           download, transcribe, audio, highlights, llm, webcam, frames, render, thumbnail,
-                  store, pipeline, jobs, settings, encoder, doctor, setup
+  core/           download, transcribe, audio, highlights, llm, autoedit, library, webcam, frames,
+                  render, thumbnail, store, pipeline, jobs, settings, encoder, doctor, setup
   server/         Bun.serve HTTP API, server-sent events, media
   web/            React + Tailwind web app
 scripts/setup.ts  entry of `bun run setup`
