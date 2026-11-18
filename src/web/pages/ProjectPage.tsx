@@ -68,6 +68,7 @@ function ProjectView({
   const [view, setView] = useState<{ clipId: string; mode: PreviewMode } | null>(null);
   const [webcamOpen, setWebcamOpen] = useState(false);
   const [customUi, setCustomUi] = useState<CustomUi>({ selected: "cam", lockAspect: true });
+  const [watermarkId, setSelectedWatermark] = useState<string | null>(null);
 
   const source = project.source;
   const ready = project.stages.download.status === "done" && source !== null;
@@ -86,6 +87,8 @@ function ProjectView({
 
   const sorted = useMemo(() => sortClips(clips, sort), [clips, sort]);
   const active = clips.find((c) => c.id === activeId) ?? sorted[0] ?? null;
+  /** The selection only counts while the active clip still has that overlay. */
+  const selectedWatermark = active?.settings.watermarks.some((w) => w.id === watermarkId) ? watermarkId : null;
   const candidates = useThumbnailCandidates(project, active?.id ?? null);
 
   const synced = useRef<string | null>(null);
@@ -255,6 +258,9 @@ function ProjectView({
                       customUi={customUi}
                       onCustomUiChange={setCustomUi}
                       onCustomChange={(custom) => edit(active.id, { settings: { custom } })}
+                      selectedWatermark={selectedWatermark}
+                      onSelectWatermark={setSelectedWatermark}
+                      onWatermarksChange={(watermarks) => edit(active.id, { settings: { watermarks } })}
                     />
                   </div>
                   <div className="min-w-0">
@@ -272,6 +278,8 @@ function ProjectView({
                       onShowPreview={() => setView({ clipId: active.id, mode: "preview" })}
                       customUi={customUi}
                       onCustomUiChange={setCustomUi}
+                      selectedWatermark={selectedWatermark}
+                      onSelectWatermark={setSelectedWatermark}
                       onOpenWebcam={() => setWebcamOpen(true)}
                       onDeleteClip={(c) => void deleteClip(c)}
                     />

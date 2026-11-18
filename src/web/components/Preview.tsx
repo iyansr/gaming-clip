@@ -3,7 +3,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { buildCues, drawCaptions, type CaptionCue } from "../../shared/captions";
 import { computeLayout } from "../../shared/layout";
-import { OUTPUT_SIZE, type Clip, type CustomLayout, type Project, type Word } from "../../shared/types";
+import { OUTPUT_SIZE, type Clip, type CustomLayout, type Project, type Watermark, type Word } from "../../shared/types";
+import { drawWatermarks, type WatermarkImages } from "../../shared/watermark";
 import { media } from "../lib/api";
 import { resolveCustom, type CustomUi } from "../lib/custom";
 import { cn, fmtTime } from "../lib/format";
@@ -11,9 +12,11 @@ import { useAssetImage } from "../lib/images";
 import { LayoutPainter } from "../lib/paint";
 import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
+import { createOffscreen, drawableWatermarks, useWatermarkBoxes, useWatermarkImages } from "../lib/watermarks";
 import { CustomOverlay } from "./CustomOverlay";
 import { ThumbnailCanvas } from "./ThumbnailEditor";
 import { Button } from "./ui";
+import { WatermarkOverlay } from "./WatermarkOverlay";
 
 /** 9:16 canvas whose height is min(62vh, 620px). */
 const PREVIEW_WIDTH = "calc(min(62vh, 620px) * 9 / 16)";
@@ -34,6 +37,10 @@ interface Props {
   onCustomUiChange: (ui: CustomUi) => void;
   /** Whole new free-form layout from the on-canvas boxes. */
   onCustomChange: (custom: CustomLayout) => void;
+  selectedWatermark: string | null;
+  onSelectWatermark: (id: string | null) => void;
+  /** Whole new watermark list from the on-canvas boxes. */
+  onWatermarksChange: (watermarks: Watermark[]) => void;
 }
 
 /** Everything the draw callback needs, kept in a ref so the frame loop never restarts. */
@@ -43,6 +50,9 @@ interface DrawState {
   cues: CaptionCue[];
   fontsReady: boolean;
   image: HTMLImageElement | null;
+  /** Watermarks that can be painted now, and their decoded images. */
+  marks: Watermark[];
+  wmImages: WatermarkImages;
 }
 
 export function Preview({
@@ -57,6 +67,9 @@ export function Preview({
   customUi,
   onCustomUiChange,
   onCustomChange,
+  selectedWatermark,
+  onSelectWatermark,
+  onWatermarksChange,
 }: Props) {
   const toast = useToast();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -74,10 +87,14 @@ export function Preview({
       : null;
   const imageFile = custom?.background.kind === "image" ? custom.background.file : null;
   const image = useAssetImage(project.id, imageFile);
-  const state = useRef<DrawState>({ project, clip, cues, fontsReady, image });
+  const watermarks = clip.settings.watermarks;
+  const wmImages = useWatermarkImages(project.id, watermarks);
+  const marks = useMemo(() => drawableWatermarks(watermarks, fontsReady), [watermarks, fontsReady]);
+  const wmBoxes = useWatermarkBoxes(watermarks, wmImages, fontsReady);
+  const state = useRef<DrawState>({ project, clip, cues, fontsReady, image, marks, wmImages });
   // Refreshed at commit time, before the redraw effect below and before the next animation frame.
   useLayoutEffect(() => {
-    state.current = { project, clip, cues, fontsReady, image };
+    state.current = { project, clip, cues, fontsReady, image, marks, wmImages };
   });
 
   const rendered = clip.render.status === "done" && clip.render.file ? clip.render.file : null;
@@ -94,7 +111,15 @@ export function Preview({
     const layoutPainter = (painter.current ??= new LayoutPainter());
 
     player.setDraw(() => {
-      const { project: p, clip: c, cues: cs, fontsReady: fonts, image: background } = state.current;
+      const {
+        project: p,
+        clip: c,
+        cues: cs,
+        fontsReady: fonts,
+        image: background,
+        marks: drawn,
+        wmImages: bitmaps,
+      } = state.current;
       const video = player.video;
       if (!p.source || video.readyState < 2) {
         ctx.fillStyle = "#000";
@@ -109,6 +134,8 @@ export function Preview({
         OUTPUT_SIZE,
       );
       layoutPainter.paint(ctx, video, layout, background, OUTPUT_SIZE);
+      // Under the captions, like the renderer: after the layout layers, before the caption strip.
+      drawWatermarks(ctx, drawn, bitmaps, OUTPUT_SIZE, createOffscreen);
       if (c.settings.subtitles && fonts) {
         drawCaptions(ctx, cs, video.currentTime - c.start, c.settings.captionStyle, {
           width: OUTPUT_SIZE.width,
@@ -126,7 +153,7 @@ export function Preview({
   // Redraw while paused whenever anything the picture depends on changes.
   useEffect(() => {
     player.invalidate();
-  }, [player, project.webcam.rect, project.source, clip.settings, cues, fontsReady, image, live]);
+  }, [player, project.webcam.rect, project.source, clip.settings, cues, fontsReady, image, wmImages, live]);
 
   useEffect(() => {
     if (!live) player.pause();
@@ -143,7 +170,7 @@ export function Preview({
   const togglePlay = () => player.toggle().catch((e: unknown) => toast.error(e));
 
   const locked = clip.render.status === "queued" || clip.render.status === "rendering";
-  const editing = live && custom !== null && !locked;
+  const editing = live && !locked;
   /** Boxes only show while paused or hovered, so they never cover playback. */
   const showBoxes = editing && (!playing || hover);
 
@@ -205,6 +232,15 @@ export function Preview({
             )}
             {showBoxes && custom && (
               <CustomOverlay custom={custom} ui={customUi} onUiChange={onCustomUiChange} onChange={onCustomChange} />
+            )}
+            {showBoxes && watermarks.length > 0 && (
+              <WatermarkOverlay
+                watermarks={watermarks}
+                boxes={wmBoxes}
+                selected={selectedWatermark}
+                onSelect={onSelectWatermark}
+                onChange={onWatermarksChange}
+              />
             )}
           </>
         )}

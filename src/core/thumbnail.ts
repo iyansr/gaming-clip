@@ -7,7 +7,7 @@ import { computeLayout } from "../shared/layout";
 import { drawThumbnail, getThumbnailStyle } from "../shared/thumbnail";
 import { OUTPUT_SIZE, type ClipSettings, type LoudnessEnvelope, type Rect } from "../shared/types";
 import { grabFrame } from "./frames";
-import { registerFonts } from "./render";
+import { loadWatermarkImages, registerFonts } from "./render";
 
 export interface ThumbnailCandidate {
   time: number;
@@ -28,7 +28,7 @@ export interface ThumbnailJob {
   sourcePath: string;
   source: { width: number; height: number };
   time: number;
-  settings: Pick<ClipSettings, "layout" | "focusX" | "custom">;
+  settings: Pick<ClipSettings, "layout" | "focusX" | "custom" | "watermarks">;
   webcam: Rect | null;
   text: string;
   style: string;
@@ -179,6 +179,8 @@ export async function renderThumbnail(job: ThumbnailJob, signal?: AbortSignal): 
   frame.getContext("2d").putImageData(new ImageData(rgba, width, height), 0, 0);
 
   registerFonts();
+  const watermarks = job.settings.watermarks.filter((wm) => wm.onThumbnail);
+  const watermarkImages = await loadWatermarkImages(watermarks, job.assetsDir);
   const canvas = createCanvas(OUTPUT_SIZE.width, OUTPUT_SIZE.height);
   const layout = computeLayout(job.source, job.webcam, job.settings, OUTPUT_SIZE);
   let backgroundImage: { image: Image; size: { width: number; height: number } } | undefined;
@@ -199,6 +201,7 @@ export async function renderThumbnail(job: ThumbnailJob, signal?: AbortSignal): 
       textY: job.textY,
       sourceSize: job.source,
       backgroundImage,
+      watermarks: { list: watermarks, images: watermarkImages },
       createCanvas: (width, height) => createCanvas(width, height).getContext("2d"),
     },
     OUTPUT_SIZE,

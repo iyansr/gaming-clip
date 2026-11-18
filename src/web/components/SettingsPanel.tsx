@@ -18,8 +18,10 @@ import { usePlayer, type Player } from "../lib/player";
 import { useToast } from "../lib/toast";
 import { CaptionGallery } from "./CaptionGallery";
 import { CustomLayoutPanel } from "./CustomLayoutPanel";
+import { SocialPanel } from "./SocialPanel";
 import { ThumbnailPanel, type CandidateState } from "./ThumbnailEditor";
 import { Button, inputClass, Panel } from "./ui";
+import { WatermarkPanel } from "./WatermarkPanel";
 
 interface Props {
   project: Project;
@@ -37,6 +39,8 @@ interface Props {
   onDeleteClip: (clip: Clip) => void;
   customUi: CustomUi;
   onCustomUiChange: (ui: CustomUi) => void;
+  selectedWatermark: string | null;
+  onSelectWatermark: (id: string | null) => void;
 }
 
 const NUDGE = 0.5;
@@ -58,6 +62,8 @@ export function SettingsPanel({
   onDeleteClip,
   customUi,
   onCustomUiChange,
+  selectedWatermark,
+  onSelectWatermark,
 }: Props) {
   const toast = useToast();
   const [trimError, setTrimError] = useState<string | null>(null);
@@ -291,6 +297,17 @@ export function SettingsPanel({
             </div>
           </div>
         </Panel>
+
+        <WatermarkPanel
+          project={project}
+          clip={clip}
+          edit={edit}
+          selected={selectedWatermark}
+          onSelect={onSelectWatermark}
+          flushAll={flushAll}
+          applyProject={applyProject}
+          onShowPreview={onShowPreview}
+        />
       </fieldset>
 
       <ThumbnailPanel
@@ -308,6 +325,8 @@ export function SettingsPanel({
       <Button variant="secondary" onClick={() => void applyAll()} disabled={applying || locked} className="w-full">
         {applying ? "Applying..." : "Apply these settings to all clips"}
       </Button>
+
+      <SocialPanel project={project} clip={clip} applyProject={applyProject} />
     </div>
   );
 }

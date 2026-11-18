@@ -51,7 +51,15 @@ function normalizeHex(text: string): string | null {
   }`;
 }
 
-function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (hex: string) => void }) {
+export function ColorField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (hex: string) => void;
+}) {
   const [draft, setDraft] = useState<string | null>(null);
   const commit = () => {
     const hex = draft === null ? null : normalizeHex(draft);
@@ -84,7 +92,7 @@ function ColorField({ label, value, onChange }: { label: string; value: string; 
   );
 }
 
-function Slider({
+export function Slider({
   label,
   value,
   min,

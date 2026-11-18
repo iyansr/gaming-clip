@@ -140,6 +140,8 @@ function invalidatesThumbnail(clip: Clip, edit: ClipEdit): boolean {
     edit.settings?.layout !== undefined ||
     edit.settings?.focusX !== undefined ||
     edit.settings?.custom !== undefined ||
+    (edit.settings?.watermarks !== undefined &&
+      (edit.settings.watermarks.some((w) => w.onThumbnail) || clip.settings.watermarks.some((w) => w.onThumbnail))) ||
     (edit.title !== undefined && edit.title !== clip.title && clip.thumbnail.text === null)
   );
 }

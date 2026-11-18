@@ -108,11 +108,15 @@ export async function getProject(id: string): Promise<Project> {
     throw error;
   }
   const project = JSON.parse(text) as Project;
-  // Project files written before thumbnails existed have clips without one; before the custom layout, settings without `custom`.
+  // Project files written before thumbnails existed have clips without one; before the custom layout, settings without
+  // `custom`; before watermarks and post text, settings without `watermarks` and clips without `social`.
   project.defaults.custom ??= null;
+  project.defaults.watermarks ??= [];
   for (const clip of project.clips) {
     clip.thumbnail = { ...DEFAULT_THUMBNAIL, ...clip.thumbnail };
     clip.settings.custom ??= null;
+    clip.settings.watermarks ??= [];
+    clip.social ??= null;
   }
   return project;
 }

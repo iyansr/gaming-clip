@@ -101,6 +101,8 @@ export const api = {
     request<ThumbnailCandidate[]>("GET", `${projectUrl(id)}/clips/${clipId}/thumbnail/candidates`),
   generateThumbnail: (id: string, clipId: string) =>
     request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/thumbnail`, {}),
+  generateSocial: (id: string, clipId: string, language?: string) =>
+    request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/social`, language ? { language } : {}),
   cancelRender: (id: string) => request<Project>("POST", `${projectUrl(id)}/render/cancel`, {}),
   settings: () => request<SettingsResponse>("GET", "/api/settings"),
   patchSettings: (patch: SettingsPatch) => request<SettingsResponse>("PATCH", "/api/settings", patch),

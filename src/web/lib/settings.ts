@@ -24,6 +24,9 @@ export interface Draft {
   whisperModel: string;
   defaultLanguage: string;
   renderJobs: number;
+  /** The guidance text as shown in the editor: the saved prompt, or the built-in default when none is saved. */
+  highlightPrompt: string;
+  socialPrompt: string;
 }
 
 export function draftFrom(settings: SettingsResponse): Draft {
@@ -38,6 +41,8 @@ export function draftFrom(settings: SettingsResponse): Draft {
     whisperModel: values.whisperModel,
     defaultLanguage: values.defaultLanguage,
     renderJobs: values.renderJobs,
+    highlightPrompt: values.highlightPrompt || settings.defaults.highlightPrompt,
+    socialPrompt: values.socialPrompt || settings.defaults.socialPrompt,
   };
 }
 
@@ -60,6 +65,12 @@ export function buildPatch(draft: Draft, settings: SettingsResponse): SettingsPa
   if (free("defaultLanguage") && draft.defaultLanguage !== values.defaultLanguage)
     patch.defaultLanguage = draft.defaultLanguage;
   if (free("renderJobs") && draft.renderJobs !== values.renderJobs) patch.renderJobs = draft.renderJobs;
+  for (const field of ["highlightPrompt", "socialPrompt"] as const) {
+    const fallback = settings.defaults[field];
+    if (draft[field].trim() === (values[field] || fallback).trim()) continue;
+    // Text equal to the built-in default is saved as "" so a later improvement of the default reaches the user.
+    patch[field] = draft[field].trim() === fallback.trim() ? "" : draft[field];
+  }
   return patch;
 }
 

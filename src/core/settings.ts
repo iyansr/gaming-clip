@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { MAX_RENDER_JOBS } from "../shared/settings";
+import { MAX_PROMPT_CHARS, MAX_RENDER_JOBS } from "../shared/settings";
 import { WORKSPACE_DIR, whisperModelFile } from "./config";
+import { DEFAULT_HIGHLIGHT_GUIDANCE, DEFAULT_SOCIAL_GUIDANCE } from "./prompts";
 import { ConflictError, ValidationError } from "./store";
 
 /**
@@ -76,6 +77,8 @@ export const SETTING_FIELDS = [
   "whisperModel",
   "defaultLanguage",
   "renderJobs",
+  "highlightPrompt",
+  "socialPrompt",
 ] as const;
 export type SettingField = (typeof SETTING_FIELDS)[number];
 
@@ -88,6 +91,10 @@ export interface SettingValues {
   whisperModel: string;
   defaultLanguage: string;
   renderJobs: number;
+  /** Editable guidance of the highlight prompt; "" = the built-in default. */
+  highlightPrompt: string;
+  /** Editable guidance of the post-text prompt; "" = the built-in default. */
+  socialPrompt: string;
 }
 
 export type SettingSource = "env" | "settings" | "default";
@@ -108,6 +115,8 @@ const DEFAULTS: SettingValues = {
   whisperModel: DEFAULT_WHISPER_MODEL,
   defaultLanguage: "auto",
   renderJobs: DEFAULT_RENDER_JOBS,
+  highlightPrompt: "",
+  socialPrompt: "",
 };
 
 export const settingsPath = () => join(WORKSPACE_DIR, "settings.json");
@@ -182,6 +191,9 @@ function parseField(field: SettingField, value: unknown): SettingValues[SettingF
         throw new ValidationError(`defaultLanguage must be "auto" or a language code like "en"`);
       }
       return value;
+    case "highlightPrompt":
+    case "socialPrompt":
+      return text(value, field, MAX_PROMPT_CHARS);
     case "renderJobs":
       if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_RENDER_JOBS) {
         throw new ValidationError(`renderJobs must be a whole number from 1 to ${MAX_RENDER_JOBS}`);
@@ -253,6 +265,8 @@ function lockingEnv(field: SettingField): string | null {
     case "renderJobs":
       return Number(envText("GCLIP_RENDER_JOBS")) >= 1 ? "GCLIP_RENDER_JOBS" : null;
     case "defaultLanguage":
+    case "highlightPrompt":
+    case "socialPrompt":
       return null;
   }
 }
@@ -336,7 +350,8 @@ function checkCombination(values: SettingValues, hasEnvCommand: boolean): void {
 /**
  * Applies a partial change and persists it. All-or-nothing: throws ValidationError (400) for a bad field or
  * unknown key and ConflictError (409) for a field an environment variable decides; nothing is written then.
- * `llmApiKey: ""`, `llmModel: ""` and `llmBaseUrl: ""` clear the saved value.
+ * `llmApiKey: ""`, `llmModel: ""`, `llmBaseUrl: ""`, `highlightPrompt: ""` and `socialPrompt: ""` clear the saved value
+ * (the prompts then fall back to their built-in guidance).
  */
 export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
   const changes: StoredSettings = {};
@@ -384,6 +399,8 @@ export interface PublicSettings {
   llmApiKeySet: boolean;
   sources: Record<SettingField, SettingSource>;
   envVars: Partial<Record<SettingField, string>>;
+  /** Built-in guidance texts: what an empty prompt value stands for. */
+  defaults: { highlightPrompt: string; socialPrompt: string };
   aiCommandPresets: { id: AiCommandPreset; label: string; command: string; found: boolean }[];
 }
 
@@ -395,6 +412,7 @@ export function publicSettings(): PublicSettings {
     llmApiKeySet: llmApiKey !== "",
     sources,
     envVars,
+    defaults: { highlightPrompt: DEFAULT_HIGHLIGHT_GUIDANCE, socialPrompt: DEFAULT_SOCIAL_GUIDANCE },
     aiCommandPresets: (Object.keys(AI_COMMAND_PRESETS) as AiCommandPreset[]).map((id) => ({
       id,
       label: AI_COMMAND_PRESETS[id].label,

@@ -17,6 +17,7 @@ import { buildPatch, draftFrom, type Draft, type SettingsResponse } from "../lib
 import { useToast } from "../lib/toast";
 import { AiSection } from "./settings/AiSection";
 import { AboutSection, RenderingSection } from "./settings/OtherSections";
+import { PromptsSection } from "./settings/PromptsSection";
 import { TranscriptionSection } from "./settings/TranscriptionSection";
 import { Button } from "./ui";
 
@@ -238,6 +239,7 @@ function SettingsForm({ onDirty, onSaved, onClose, requestClose, confirmDiscard,
     <>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <AiSection {...section} dirty={dirty} saveFirst={save} />
+        <PromptsSection {...section} />
         <TranscriptionSection {...section} models={models} onDownload={download} />
         <RenderingSection {...section} />
         <AboutSection info={loaded.info} />

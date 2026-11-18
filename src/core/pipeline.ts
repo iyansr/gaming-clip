@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 
 import { loadImage } from "@napi-rs/canvas";
 
-import { CAPTION_STYLES } from "../shared/captions";
+import { CAPTION_FONTS, CAPTION_STYLES } from "../shared/captions";
 import { defaultCustomLayout } from "../shared/layout";
 import { THUMBNAIL_STYLES } from "../shared/thumbnail";
 import {
@@ -29,8 +29,10 @@ import {
   type StageId,
   type Transcript,
   type Webcam,
+  type Watermark,
   type Word,
 } from "../shared/types";
+import { MAX_WATERMARKS } from "../shared/watermark";
 import { loudnessEnvelope } from "./audio";
 import { projectPaths, type ProjectPaths } from "./config";
 import { fetchSource, probeMedia } from "./download";
@@ -112,6 +114,7 @@ export function makeClip(project: Project, fields: ClipFields, source: ClipSourc
     settings: concreteSettings(project, { ...project.defaults }),
     render: { status: "idle", progress: 0 },
     thumbnail: { ...DEFAULT_THUMBNAIL },
+    social: null,
   };
 }
 
@@ -395,11 +398,93 @@ function checkCustomLayout(custom: CustomLayout, project: Project): void {
   }
 }
 
+const WATERMARK_ID_PATTERN = /^[a-z0-9]{4,12}$/;
+const WATERMARK_TEXT_LIMIT = 120;
+const WATERMARK_KEYS = ["id", "kind", "x", "y", "rotation", "opacity", "onThumbnail"];
+
+function parseColor(value: unknown, name: string): string {
+  if (typeof value !== "string" || !COLOR_PATTERN.test(value))
+    throw new ValidationError(`${name} must be a colour like #ffffff`);
+  return value.toLowerCase();
+}
+
+/** Strict structure and range check of a watermark list (unknown keys rejected); uploaded files are checked by `checkWatermarks`. */
+function parseWatermarks(raw: unknown): Watermark[] {
+  if (!Array.isArray(raw)) throw new ValidationError("watermarks must be an array");
+  if (raw.length > MAX_WATERMARKS) throw new ValidationError(`At most ${MAX_WATERMARKS} watermarks are allowed`);
+  const ids = new Set<string>();
+  return raw.map((entry: unknown, i): Watermark => {
+    const what = `watermarks[${i}]`;
+    const obj = asObject(entry, what);
+    if (obj.kind !== "text" && obj.kind !== "image")
+      throw new ValidationError(`${what}.kind must be "text" or "image"`);
+    rejectUnknownKeys(
+      obj,
+      [
+        ...WATERMARK_KEYS,
+        ...(obj.kind === "image" ? ["file", "width"] : ["text", "font", "size", "color", "stroke", "strokeColor"]),
+      ],
+      what,
+    );
+    if (typeof obj.id !== "string" || !WATERMARK_ID_PATTERN.test(obj.id))
+      throw new ValidationError(`${what}.id must be 4-12 lowercase letters or digits`);
+    if (ids.has(obj.id)) throw new ValidationError(`${what}.id "${obj.id}" is used twice`);
+    ids.add(obj.id);
+    if (typeof obj.onThumbnail !== "boolean") throw new ValidationError(`${what}.onThumbnail must be true or false`);
+    const base = {
+      id: obj.id,
+      x: numberInRange(obj.x, `${what}.x`, -OUTPUT_SIZE.width, 2 * OUTPUT_SIZE.width),
+      y: numberInRange(obj.y, `${what}.y`, -OUTPUT_SIZE.height, 2 * OUTPUT_SIZE.height),
+      rotation: numberInRange(obj.rotation, `${what}.rotation`, -180, 180),
+      opacity: numberInRange(obj.opacity, `${what}.opacity`, 0, 1),
+      onThumbnail: obj.onThumbnail,
+    };
+    if (obj.kind === "image") {
+      if (typeof obj.file !== "string" || !ASSET_NAME_PATTERN.test(obj.file))
+        throw new ValidationError(`${what}.file must be the file name returned by the assets upload`);
+      return {
+        ...base,
+        kind: "image",
+        file: obj.file,
+        width: numberInRange(obj.width, `${what}.width`, 16, 2 * OUTPUT_SIZE.width),
+      };
+    }
+    if (typeof obj.text !== "string" || obj.text.length < 1 || obj.text.length > WATERMARK_TEXT_LIMIT)
+      throw new ValidationError(`${what}.text must be 1-${WATERMARK_TEXT_LIMIT} characters`);
+    if (/[\r\n\u2028\u2029]/.test(obj.text)) throw new ValidationError(`${what}.text must be a single line`);
+    const families = CAPTION_FONTS.map((font) => font.family);
+    if (typeof obj.font !== "string" || !families.includes(obj.font))
+      throw new ValidationError(`${what}.font must be one of ${families.join(", ")}`);
+    return {
+      ...base,
+      kind: "text",
+      text: obj.text,
+      font: obj.font,
+      size: numberInRange(obj.size, `${what}.size`, 8, 400),
+      color: parseColor(obj.color, `${what}.color`),
+      stroke: numberInRange(obj.stroke, `${what}.stroke`, 0, 40),
+      strokeColor: parseColor(obj.strokeColor, `${what}.strokeColor`),
+    };
+  });
+}
+
+/** The part of a valid watermark list that depends on the project: every image was uploaded to it. */
+function checkWatermarks(watermarks: Watermark[], project: Project): void {
+  for (const wm of watermarks) {
+    if (wm.kind === "image" && !existsSync(join(assetsDir(project.id), wm.file)))
+      throw new ValidationError(`Watermark image ${wm.file} was not uploaded to this project`);
+  }
+}
+
 const LAYOUTS: LayoutMode[] = ["split", "fill", "fit", "custom"];
 
 export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
   const obj = asObject(raw, "settings");
-  rejectUnknownKeys(obj, ["layout", "focusX", "custom", "subtitles", "captionStyle", "captionY"], "settings");
+  rejectUnknownKeys(
+    obj,
+    ["layout", "focusX", "custom", "subtitles", "captionStyle", "captionY", "watermarks"],
+    "settings",
+  );
   const patch: Partial<ClipSettings> = {};
   if (obj.layout !== undefined) {
     if (!LAYOUTS.includes(obj.layout as LayoutMode))
@@ -420,6 +505,7 @@ export function parseSettingsPatch(raw: unknown): Partial<ClipSettings> {
     }
     patch.captionStyle = obj.captionStyle;
   }
+  if (obj.watermarks !== undefined) patch.watermarks = parseWatermarks(obj.watermarks);
   return patch;
 }
 
@@ -576,9 +662,20 @@ const framingDiffers = (a: ClipSettings, b: ClipSettings) =>
   a.focusX !== b.focusX ||
   (b.layout === "custom" && JSON.stringify(a.custom) !== JSON.stringify(b.custom));
 
+/** The watermarks painted on the cover, as comparable text. */
+const coverWatermarks = (settings: Pick<ClipSettings, "watermarks">) =>
+  JSON.stringify(settings.watermarks.filter((wm) => wm.onThumbnail));
+
+/** Settings that change the cover image: the framing and the watermarks shown on it. */
+const coverDiffers = (a: ClipSettings, b: ClipSettings) =>
+  framingDiffers(a, b) || coverWatermarks(a) !== coverWatermarks(b);
+
 const settingsDiffer = (a: ClipSettings, b: ClipSettings) =>
   framingDiffers(a, b) ||
-  (Object.keys(b) as (keyof ClipSettings)[]).some((key) => key !== "custom" && a[key] !== b[key]);
+  JSON.stringify(a.watermarks) !== JSON.stringify(b.watermarks) ||
+  (Object.keys(b) as (keyof ClipSettings)[]).some(
+    (key) => key !== "custom" && key !== "watermarks" && a[key] !== b[key],
+  );
 
 /**
  * A clip in the custom layout always stores a concrete layout: without one it starts from the
@@ -627,6 +724,7 @@ export async function patchClip(id: string, clipId: string, patch: ClipPatch): P
     const end = patch.end ?? clip.end;
     const timingChanged = start !== clip.start || end !== clip.end;
     if (patch.settings?.custom) checkCustomLayout(patch.settings.custom, p);
+    if (patch.settings?.watermarks) checkWatermarks(patch.settings.watermarks, p);
     const settings = concreteSettings(p, { ...clip.settings, ...patch.settings });
     if (timingChanged) {
       if (!p.source) throw new ValidationError("The source video is not downloaded yet");
@@ -643,7 +741,7 @@ export async function patchClip(id: string, clipId: string, patch: ClipPatch): P
       (Object.keys(patch.thumbnail) as (keyof ThumbnailPatch)[]).some(
         (key) => patch.thumbnail?.[key] !== clip.thumbnail[key],
       );
-    const framingChanged = timingChanged || framingDiffers(clip.settings, settings);
+    const framingChanged = timingChanged || coverDiffers(clip.settings, settings);
     if (timingChanged || settingsDiffer(clip.settings, settings)) invalidateRender(clip, stale);
     clip.start = start;
     clip.end = end;
@@ -680,13 +778,14 @@ export async function updateSettings(
   const stale: string[] = [];
   const project = await updateProject(id, (p) => {
     if (patch.custom) checkCustomLayout(patch.custom, p);
+    if (patch.watermarks) checkWatermarks(patch.watermarks, p);
     const clips = target === null ? [] : target === "all" ? p.clips : target.map((clipId) => findClip(p, clipId));
     if (target === null || target === "all") p.defaults = { ...p.defaults, ...patch };
     for (const clip of clips) {
       const settings = concreteSettings(p, { ...clip.settings, ...patch });
       if (!settingsDiffer(clip.settings, settings)) continue;
       invalidateRender(clip, stale);
-      if (framingDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
+      if (coverDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
       clip.settings = settings;
     }
   });
@@ -699,6 +798,7 @@ export async function patchProject(id: string, patch: ProjectPatch): Promise<Pro
   const project = await updateProject(id, (p) => {
     if (patch.defaults) {
       if (patch.defaults.custom) checkCustomLayout(patch.defaults.custom, p);
+      if (patch.defaults.watermarks) checkWatermarks(patch.defaults.watermarks, p);
       p.defaults = { ...p.defaults, ...patch.defaults };
     }
     if (patch.webcam) {
@@ -714,7 +814,7 @@ export async function patchProject(id: string, patch: ProjectPatch): Promise<Pro
         const settings = concreteSettings(p, { ...p.defaults });
         if (!settingsDiffer(clip.settings, settings)) continue;
         invalidateRender(clip, stale);
-        if (framingDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
+        if (coverDiffers(clip.settings, settings)) clearGeneratedThumbnail(clip, stale);
         clip.settings = settings;
       }
     }
@@ -1114,6 +1214,7 @@ async function generateThumbnailUnmarked(id: string, clipId: string, signal?: Ab
     layout: clip.settings.layout,
     focusX: clip.settings.focusX,
     custom: JSON.stringify(clip.settings.custom),
+    watermarks: coverWatermarks(clip.settings),
     thumbnail: JSON.stringify(clip.thumbnail),
   };
   const fileName = thumbnailFileName(clip);
@@ -1124,7 +1225,12 @@ async function generateThumbnailUnmarked(id: string, clipId: string, signal?: Ab
       sourcePath: paths.source,
       source: { width: source.width, height: source.height },
       time,
-      settings: { layout: clip.settings.layout, focusX: clip.settings.focusX, custom: clip.settings.custom },
+      settings: {
+        layout: clip.settings.layout,
+        focusX: clip.settings.focusX,
+        custom: clip.settings.custom,
+        watermarks: clip.settings.watermarks,
+      },
       webcam: project.webcam.rect,
       text: clip.thumbnail.text ?? clip.title,
       style: clip.thumbnail.style,
@@ -1148,6 +1254,7 @@ async function generateThumbnailUnmarked(id: string, clipId: string, signal?: Ab
         target.settings.layout === rendered.layout &&
         target.settings.focusX === rendered.focusX &&
         JSON.stringify(target.settings.custom) === rendered.custom &&
+        coverWatermarks(target.settings) === rendered.watermarks &&
         JSON.stringify(target.thumbnail) === rendered.thumbnail;
       if (!unchanged) return;
       if (target.thumbnail.file && target.thumbnail.file !== fileName) staleFile = target.thumbnail.file;

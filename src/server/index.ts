@@ -31,6 +31,7 @@ import {
   thumbnailCandidates,
 } from "../core/pipeline";
 import { llmConfigured, publicSettings, updateSettings } from "../core/settings";
+import { generateSocial } from "../core/social";
 import {
   ConflictError,
   createProject,
@@ -446,6 +447,19 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
 
       "/api/projects/:id/clips/:clipId/thumbnail/candidates": {
         GET: (req) => api(req, async () => Response.json(await thumbnailCandidates(req.params.id, req.params.clipId))),
+      },
+
+      "/api/projects/:id/clips/:clipId/social": {
+        POST: (req) =>
+          api(req, async () => {
+            const body = await readBody(req);
+            noUnknownKeys(body, ["language"]);
+            if (body.language !== undefined && typeof body.language !== "string")
+              throw new ValidationError('language must be a string like "en"');
+            return Response.json(
+              await generateSocial(req.params.id, req.params.clipId, { language: body.language }, req.signal),
+            );
+          }),
       },
 
       "/api/projects/:id/render": {

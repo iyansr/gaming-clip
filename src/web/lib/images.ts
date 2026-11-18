@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { media } from "./api";
 
@@ -38,4 +38,40 @@ export function useAssetImage(projectId: string, file: string | null): HTMLImage
   }, [url]);
   if (url === null) return null;
   return loaded.get(url) ?? (image?.url === url ? image.image : null);
+}
+
+/** Decodes a project asset (cached), e.g. to read the natural size of a freshly uploaded image. */
+export function loadAssetImage(projectId: string, file: string): Promise<HTMLImageElement> {
+  return loadImage(media.asset(projectId, file));
+}
+
+/** Decoded images of several project assets by file name; files that are still loading or failed are absent. */
+export function useAssetImages(projectId: string, files: string[]): Map<string, HTMLImageElement> {
+  const key = files.join("\n");
+  const [version, setVersion] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    for (const file of key === "" ? [] : key.split("\n")) {
+      const url = media.asset(projectId, file);
+      if (loaded.has(url)) continue;
+      loadImage(url)
+        .then(() => {
+          if (!cancelled) setVersion((v) => v + 1);
+        })
+        .catch((e: unknown) => console.error(e));
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, key]);
+  return useMemo(() => {
+    const map = new Map<string, HTMLImageElement>();
+    for (const file of key === "" ? [] : key.split("\n")) {
+      const image = loaded.get(media.asset(projectId, file));
+      if (image) map.set(file, image);
+    }
+    return map;
+    // `version` bumps when a pending image finishes loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, key, version]);
 }

@@ -5,7 +5,8 @@
 import type { CaptionContext } from "./captions";
 import { drawCamBorder, drawCamMask, type ComposeContext } from "./compose";
 import type { FrameLayout, LayoutLayer } from "./layout";
-import { OUTPUT_SIZE, type Size } from "./types";
+import { OUTPUT_SIZE, type Size, type Watermark } from "./types";
+import { drawWatermarks, type WatermarkImages } from "./watermark";
 
 export interface ThumbnailStyle {
   id: string;
@@ -156,6 +157,7 @@ export interface ThumbnailContext extends CaptionContext, ComposeContext {
     dh: number,
   ): void;
   fillRect(x: number, y: number, w: number, h: number): void;
+  clearRect(x: number, y: number, w: number, h: number): void;
   createLinearGradient(
     x0: number,
     y0: number,
@@ -173,7 +175,9 @@ export interface ThumbnailOptions {
   sourceSize: Size;
   /** Decoded picture for layouts with an image background (`layout.image`), and its pixel size. Without it only `layout.fill` shows. */
   backgroundImage?: { image: unknown; size: Size };
-  /** New transparent offscreen canvas (returned as its context); needed for a webcam with a soft edge or rounded corners. */
+  /** Watermarks of the clip (all of them; those with `onThumbnail` are painted, under the headline) and their bitmaps. */
+  watermarks?: { list: Watermark[]; images: WatermarkImages };
+  /** New transparent offscreen canvas (returned as its context); needed for a webcam with a soft edge or rounded corners, and for translucent outlined watermark text. */
   createCanvas?: (width: number, height: number) => ThumbnailContext;
 }
 
@@ -446,6 +450,10 @@ export function drawThumbnail(
     );
   }
   ctx.restore();
+  if (opts.watermarks) {
+    const list = opts.watermarks.list.filter((wm) => wm.onThumbnail);
+    drawWatermarks(ctx, list, opts.watermarks.images, frame, opts.createCanvas);
+  }
 
   const words = headlineWords(opts.text, style.uppercase);
   if (words.length === 0) return;

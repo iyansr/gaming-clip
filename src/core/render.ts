@@ -1,7 +1,7 @@
 import { mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
+import { createCanvas, GlobalFonts, loadImage } from "@napi-rs/canvas";
 
 import {
   activeCue,
@@ -13,7 +13,8 @@ import {
 } from "../shared/captions";
 import { drawCamBorder, drawCamMask, type ComposeContext } from "../shared/compose";
 import { computeLayout, type LayoutLayer } from "../shared/layout";
-import { OUTPUT_SIZE, type ClipSettings, type Rect, type Word } from "../shared/types";
+import { OUTPUT_SIZE, type ClipSettings, type Rect, type Watermark, type Word } from "../shared/types";
+import { drawWatermarks, type WatermarkImages } from "../shared/watermark";
 import { BIN, FONTS_DIR } from "./config";
 import { videoEncoderArgs } from "./encoder";
 import { ExecError } from "./exec";
@@ -97,6 +98,8 @@ interface GraphPlan {
   fill: string;
   /** Background image file, cover-fitted over the base colour. */
   imageFile: string | null;
+  /** Transparent 1080x1920 PNG with every watermark, overlaid after the layout layers and under the captions. */
+  watermarkFile: string | null;
 }
 
 function placeLayers(layers: LayoutLayer[], source: { width: number; height: number }): PlacedLayer[] {
@@ -155,6 +158,24 @@ async function writeCamImage(
   await Bun.write(path, await canvas.encode("png"));
 }
 
+/** Decodes the bitmaps of the image watermarks from the project's assets directory. */
+export async function loadWatermarkImages(
+  watermarks: Watermark[],
+  assetsDir: string | undefined,
+): Promise<WatermarkImages> {
+  const images: WatermarkImages = new Map();
+  for (const wm of watermarks) {
+    if (wm.kind !== "image" || images.has(wm.file)) continue;
+    if (!assetsDir) throw new Error("A watermark uses an image but the job has no assets directory");
+    const path = join(assetsDir, basename(wm.file));
+    if (!(await Bun.file(path).exists()))
+      throw new Error(`Watermark image ${wm.file} is missing from the project assets`);
+    const image = await loadImage(path);
+    images.set(wm.file, { image, width: image.width, height: image.height });
+  }
+  return images;
+}
+
 /** Placement of the layout's layers plus the temporary images they need; every file written is listed in `scratch`. */
 async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Promise<GraphPlan> {
   const layout = computeLayout(
@@ -186,14 +207,28 @@ async function planGraph(job: RenderJob, tmpPath: string, scratch: string[]): Pr
       await writeCamImage(placed.borderFile, placed, (ctx, w, h) => drawCamBorder(ctx, w, h, style));
     }
   }
-  return { layers, fill: layout.fill, imageFile };
+  let watermarkFile: string | null = null;
+  if (job.settings.watermarks.length > 0) {
+    registerFonts();
+    const images = await loadWatermarkImages(job.settings.watermarks, job.assetsDir);
+    const canvas = createCanvas(OUT_W, OUT_H);
+    drawWatermarks(canvas.getContext("2d"), job.settings.watermarks, images, OUTPUT_SIZE, (width, height) =>
+      createCanvas(width, height).getContext("2d"),
+    );
+    watermarkFile = `${stem}.watermarks.png`;
+    scratch.push(watermarkFile);
+    await Bun.write(watermarkFile, await canvas.encode("png"));
+  }
+  return { layers, fill: layout.fill, imageFile, watermarkFile };
 }
 
 /** Still-image inputs after the video (and caption pipe), in the order the graph refers to them. */
 function extraFiles(plan: GraphPlan): string[] {
-  return [plan.imageFile, ...plan.layers.flatMap((placed) => [placed.maskFile, placed.borderFile])].filter(
-    (file): file is string => file !== undefined && file !== null,
-  );
+  return [
+    plan.imageFile,
+    ...plan.layers.flatMap((placed) => [placed.maskFile, placed.borderFile]),
+    plan.watermarkFile,
+  ].filter((file): file is string => file !== undefined && file !== null);
 }
 
 function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captions: { y: number } | null): string {
@@ -261,6 +296,11 @@ function buildFilterGraph(plan: GraphPlan, fps: string, duration: number, captio
       acc = `[ob${i}]`;
     }
   });
+  if (plan.watermarkFile) {
+    chains.push(`[${inputOf(plan.watermarkFile)}:v]scale=out_color_matrix=bt709,format=yuva420p[wm]`);
+    chains.push(`${acc}[wm]overlay=0:0[ow]`);
+    acc = "[ow]";
+  }
   if (captions) {
     chains.push(`[1:v]scale=out_color_matrix=bt709,format=yuva420p[cap]`);
     chains.push(`${acc}[cap]overlay=0:${captions.y}[oc]`);

@@ -1,6 +1,7 @@
 import type { HighlightEngine, LoudnessEnvelope, ProjectOptions, Segment, Transcript } from "../shared/types";
 import { chatJson, type ChatMessage } from "./llm";
-import { llmConfigured } from "./settings";
+import { DEFAULT_HIGHLIGHT_GUIDANCE } from "./prompts";
+import { getSettings, llmConfigured } from "./settings";
 
 export interface HighlightCandidate {
   start: number;
@@ -724,7 +725,7 @@ export function parseLlmClips(
   return candidates;
 }
 
-interface TranscriptChunk {
+export interface TranscriptChunk {
   text: string;
   /** Seconds on the source timeline. */
   start: number;
@@ -800,12 +801,17 @@ const LLM_SYSTEM: ChatMessage = {
     "You are an expert short-form video editor working on gaming videos. You pick moments for vertical 1080x1920 shorts. Reply with one JSON object only, no prose.",
 };
 
-function llmPrompt(
+/**
+ * One chunk's prompt: facts, then the editable `guidance` (what makes a good moment), then the fixed rules that the
+ * parser relies on (count, length bounds, timestamp format, JSON shape). The fixed part always comes last.
+ */
+export function llmPrompt(
   title: string,
   transcript: Transcript,
   options: ProjectOptions,
   chunk: TranscriptChunk,
   target: number | null,
+  guidance: string = DEFAULT_HIGHLIGHT_GUIDANCE,
 ): string {
   const countLine =
     target === null
@@ -821,12 +827,15 @@ function llmPrompt(
   return [
     `Video title: ${title}`,
     `Transcript language: ${transcript.language || "unknown"}. Write every title in that language.`,
-    "This is gaming content. A good short is funny, shocking, a clutch play, rage or a jump scare. It must be self-contained with setup and payoff, and must grab attention in the first 2 seconds.",
+    "Guidance from the user (it only decides which moments to prefer and how to write titles and reasons):",
+    guidance.trim() || DEFAULT_HIGHLIGHT_GUIDANCE,
+    "",
+    "Rules that always apply and override anything above:",
     ...countLine,
     `Each clip must be between ${options.minDuration} and ${options.maxDuration} seconds long.`,
     "All times are seconds from the start of the video and must come from the transcript timestamps below. start must be less than end.",
     "Transcript lines show timestamps as [MM:SS.s -> MM:SS.s] (H:MM:SS.s on videos an hour or longer). Give start/end either as plain seconds or in that same MM:SS.s / H:MM:SS.s format.",
-    'Reply with JSON: {"clips":[{"start":number,"end":number,"title":string,"reason":string,"score":number}]} where score is 0-100.',
+    'Reply with JSON only, no prose: {"clips":[{"start":number,"end":number,"title":string,"reason":string,"score":number}]} where score is 0-100.',
     "",
     "Transcript chunk:",
     chunk.text,
@@ -844,6 +853,7 @@ async function llmHighlights(
   const chunks = chunkTranscript(text, MAX_TRANSCRIPT_CHUNK);
   if (!chunks.length) chunks.push({ text: "(no transcript)", start: 0, end: input.duration });
   const targets = auto ? null : allocateCounts(chunks, input.options.clipCount!);
+  const guidance = getSettings().values.highlightPrompt || DEFAULT_HIGHLIGHT_GUIDANCE;
 
   const answers: HighlightCandidate[][] = chunks.map(() => []);
   let next = 0;
@@ -858,7 +868,14 @@ async function llmHighlights(
           LLM_SYSTEM,
           {
             role: "user",
-            content: llmPrompt(input.title, input.transcript, input.options, chunks[index]!, targets?.[index] ?? null),
+            content: llmPrompt(
+              input.title,
+              input.transcript,
+              input.options,
+              chunks[index]!,
+              targets?.[index] ?? null,
+              guidance,
+            ),
           },
         ],
         signal,

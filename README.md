@@ -39,6 +39,7 @@ flowchart LR
 - Layouts: `split` (webcam on top, gameplay below), `fill` (gameplay cropped to 9:16), `fit` (whole frame over a blurred copy), `custom` (free-form boxes).
 - Webcam: automatic detection, a visual editor to fix the rectangle, feathered edge, rounded corners or circle, border and border colour.
 - Backgrounds for `custom`: blurred video, a colour, or your own image.
+- Watermarks: up to 5 per clip, text or your own PNG/JPEG/WebP image. Drag, resize and rotate them right on the preview; they appear in the render and (optionally) on the thumbnail.
 - Captions with word highlighting in 6 styles: `pop`, `neon`, `box`, `comic`, `clean`, `focus`. Per clip on or off.
 - Per-clip trim, title and score. Manual clips next to the suggested ones.
 - Thumbnails in 5 styles (`impact`, `banner`, `neon`, `comic`, `minimal`) with an automatic best-frame pick and a headline you can edit (`*word*` colours a word).
@@ -104,10 +105,13 @@ Tools in `tools/` are used before the ones on your `PATH`. Run `bun run clip doc
 4. **Open the project.** The editor appears as soon as the download is done. Tick the clips you want in the list. Each has a title, a score and a reason.
 5. **Trim.** Set the start and end of a clip (type a time or use the player). Add your own clip if the engine missed a moment.
 6. **Pick a layout.** `split`, `fill`, `fit` or `custom`. For `custom`, drag and resize the gameplay and webcam boxes right on the preview, crop what each shows, and choose the background.
-7. **Pick captions.** Choose a style from the gallery, switch captions off for clips without speech, move the captions up or down.
-8. **Fix the webcam if needed.** Open the webcam editor and drag the rectangle over your facecam, or mark that the video has none (`split` then falls back to `fill`).
-9. **Make a thumbnail.** Switch the preview to **Thumbnail**: pick a frame (suggested sharp frames near loud moments, the playhead, or a scrubber), edit the headline, choose a style and position.
-10. **Render.** Click **Render N selected**. Clips render a couple at a time; **Cancel render** stops them. Each finished clip can be played and downloaded in the page.
+7. **Add watermarks (optional).** In the **Watermark** panel add text or an image, then drag it on the preview: corner handle to resize, round handle to rotate (hold Shift to snap to 15°), arrow keys to nudge, Delete to remove. **Copy watermarks to all clips** copies only the watermarks, never layouts or captions.
+8. **Pick captions.** Choose a style from the gallery, switch captions off for clips without speech, move the captions up or down.
+9. **Fix the webcam if needed.** Open the webcam editor and drag the rectangle over your facecam, or mark that the video has none (`split` then falls back to `fill`).
+10. **Make a thumbnail.** Switch the preview to **Thumbnail**: pick a frame (suggested sharp frames near loud moments, the playhead, or a scrubber), edit the headline, choose a style and position.
+11. **Render.** Click **Render N selected**. Clips render a couple at a time; **Cancel render** stops them. Each finished clip can be played and downloaded in the page.
+
+**Post text.** With the Highlight AI on, the **Post text** panel of a clip writes a caption and hashtags for Instagram and TikTok and a title, description and hashtags for YouTube Shorts (always with `#Shorts`), in the video's language or one you choose. Each tab has copy buttons and character counters; the text is stored on the clip (`clip.social` in `project.json`) and marked when the clip was trimmed afterwards. Tone and hashtag taste are editable under **Settings > Prompts**.
 
 Everything lands in `workspace/projects/<id>/clips/` (use the `GCLIP_WORKSPACE` variable to move the workspace):
 
@@ -124,12 +128,13 @@ workspace/projects/<id>/
 
 Click the gear icon at the top right of any page. No `.env` file is needed.
 
-| Section           | What it does                                                                                                                                                                                                                                                        |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Highlight AI**  | Off (built-in method), an AI app on this computer (Claude Code or Codex), or an OpenAI-compatible or Claude-compatible service: model name, optional web address, API key. **Test** sends one tiny real request. See [Highlight AI options](#highlight-ai-options). |
-| **Transcription** | The speech model, with sizes: models download from inside the dialog. The default language for new projects.                                                                                                                                                        |
-| **Rendering**     | How many clips render at the same time (1 to 4). More is faster on a strong computer but uses more memory.                                                                                                                                                          |
-| **About**         | Version, address, the projects and models folders, links to the source and to support the project.                                                                                                                                                                  |
+| Section           | What it does                                                                                                                                                                                                                                                                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Highlight AI**  | Off (built-in method), an AI app on this computer (Claude Code or Codex), or an OpenAI-compatible or Claude-compatible service: model name, optional web address, API key. **Test** sends one tiny real request. See [Highlight AI options](#highlight-ai-options).                                                             |
+| **Prompts**       | The guidance the Highlight AI gets: what makes a good moment, and the tone, style and hashtag taste for post text. **Reset to default** restores the built-in text. The answer format, time format, clip length limits, language and platform limits are added automatically after your text, so a prompt cannot break parsing. |
+| **Transcription** | The speech model, with sizes: models download from inside the dialog. The default language for new projects.                                                                                                                                                                                                                    |
+| **Rendering**     | How many clips render at the same time (1 to 4). More is faster on a strong computer but uses more memory.                                                                                                                                                                                                                      |
+| **About**         | Version, address, the projects and models folders, links to the source and to support the project.                                                                                                                                                                                                                              |
 
 - Settings are saved in `<workspace>/settings.json` with file mode `0600` (it can hold an API key). The key stays on your computer and is never sent back to the browser.
 - Changes apply without a restart, to renders and projects started afterwards.
@@ -196,21 +201,22 @@ Exit codes: `0` ok, `1` failure, `2` usage error. Times are seconds (`83.5`) or 
 
 **Clips and look**
 
-| Command                                                                                                                                                                     | Purpose                                                                           |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `clip clips set <id> <file.json>`                                                                                                                                           | Replace all non-manual clips with picks from `[{start,end,title,reason?,score?}]` |
-| `clip clips add <id> <start> <end> [title]`                                                                                                                                 | Add a manual clip                                                                 |
-| `clip clips rm <id> <clipId>`                                                                                                                                               | Remove a clip                                                                     |
-| `clip clips select <id> <clipId,...\|all\|none>`                                                                                                                            | Choose which clips render                                                         |
-| `clip webcam <id> [--detect \| --none \| --rect x,y,w,h]`                                                                                                                   | Detect again, mark "no webcam", or set the rectangle in source pixels             |
-| `clip settings <id> [--clips a,b\|all] [--layout split\|fill\|fit\|custom] [--custom-json <file>] [--subtitles on\|off] [--style <id>] [--caption-y 0..1] [--focus-x 0..1]` | Layout and caption settings. Without `--clips` it changes the project defaults    |
+| Command                                                                                                                                                                                                                  | Purpose                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| `clip clips set <id> <file.json>`                                                                                                                                                                                        | Replace all non-manual clips with picks from `[{start,end,title,reason?,score?}]` |
+| `clip clips add <id> <start> <end> [title]`                                                                                                                                                                              | Add a manual clip                                                                 |
+| `clip clips rm <id> <clipId>`                                                                                                                                                                                            | Remove a clip                                                                     |
+| `clip clips select <id> <clipId,...\|all\|none>`                                                                                                                                                                         | Choose which clips render                                                         |
+| `clip webcam <id> [--detect \| --none \| --rect x,y,w,h]`                                                                                                                                                                | Detect again, mark "no webcam", or set the rectangle in source pixels             |
+| `clip settings <id> [--clips a,b\|all] [--layout split\|fill\|fit\|custom] [--custom-json <file>] [--subtitles on\|off] [--style <id>] [--caption-y 0..1] [--focus-x 0..1] [--watermarks-json <file>] [--no-watermarks]` | Layout and caption settings. Without `--clips` it changes the project defaults    |
 
 **Output**
 
-| Command                                                                                                                            | Purpose                                                         |
-| ---------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `clip render <id> [--clips a,b\|all]`                                                                                              | Render the selected clips one after another and print the files |
-| `clip thumbnail <id> [--clips a,b\|all] [--time T\|auto] [--text "..."] [--no-text] [--title-text] [--style <id>] [--text-y 0..1]` | Make 1080x1920 cover images and print the files                 |
+| Command                                                                                                                            | Purpose                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `clip render <id> [--clips a,b\|all]`                                                                                              | Render the selected clips one after another and print the files                                                                                                                                                                |
+| `clip thumbnail <id> [--clips a,b\|all] [--time T\|auto] [--text "..."] [--no-text] [--title-text] [--style <id>] [--text-y 0..1]` | Make 1080x1920 cover images and print the files                                                                                                                                                                                |
+| `clip social <id> [--clips a,b\|all] [--language xx]`                                                                              | Write Instagram, TikTok and YouTube Shorts post text (caption or title, description, hashtags) with the Highlight AI and store it on each clip. Default: selected clips; language: the video's, or a code such as `en` or `id` |
 
 `bun run clip` is the same as `bun src/cli.ts`; the `clip` in the tables stands for either.
 

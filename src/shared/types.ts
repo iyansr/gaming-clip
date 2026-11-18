@@ -117,6 +117,72 @@ export interface ClipSettings {
   captionStyle: string;
   /** 0..1 vertical center of the caption block in the output frame. */
   captionY: number;
+  /** Overlays painted on every frame (under the captions), in paint order. */
+  watermarks: Watermark[];
+}
+
+interface WatermarkBase {
+  /** Stable id (short random string) so the editor can select and update one overlay. */
+  id: string;
+  /** Centre of the overlay in output pixels (1080x1920 frame); may lie partly outside the frame. */
+  x: number;
+  y: number;
+  /** Clockwise rotation in degrees, -180..180. */
+  rotation: number;
+  /** 0..1 */
+  opacity: number;
+  /** Also paint it on the clip's thumbnail. */
+  onThumbnail: boolean;
+}
+
+export interface TextWatermark extends WatermarkBase {
+  kind: "text";
+  /** Single line, at most 120 characters. */
+  text: string;
+  /** Must be a family in CAPTION_FONTS. */
+  font: string;
+  /** Font size in output px; resizing a text overlay changes this. */
+  size: number;
+  color: string;
+  /** Outline width in output px (0 = none) and its colour. */
+  stroke: number;
+  strokeColor: string;
+}
+
+export interface ImageWatermark extends WatermarkBase {
+  kind: "image";
+  /** Basename in the project's assets directory (uploaded like custom-layout backgrounds). */
+  file: string;
+  /** Width in output px; height follows the image's aspect ratio. Resizing changes this. */
+  width: number;
+}
+
+export type Watermark = TextWatermark | ImageWatermark;
+
+/** Post text for one platform; hashtags are stored without the leading `#`. */
+export interface SocialPost {
+  caption: string;
+  hashtags: string[];
+}
+
+export interface YoutubeShortPost {
+  /** At most 100 characters. */
+  title: string;
+  description: string;
+  hashtags: string[];
+}
+
+/** Ready-to-paste post text for a rendered short, generated on request by the highlight AI. */
+export interface ClipSocial {
+  /** Language the text was written in (ISO code). */
+  language: string;
+  instagram: SocialPost;
+  tiktok: SocialPost;
+  youtube: YoutubeShortPost;
+  generatedAt: string;
+  /** Clip range it was written for; differs from the clip once the clip is trimmed. */
+  start: number;
+  end: number;
 }
 
 export type ClipSource = "heuristic" | "llm" | "agent" | "manual";
@@ -164,6 +230,8 @@ export interface Clip {
   settings: ClipSettings;
   render: ClipRender;
   thumbnail: ClipThumbnail;
+  /** Null until generated (manual action). */
+  social: ClipSocial | null;
 }
 
 export type StageId = "download" | "transcribe" | "highlights" | "webcam";
@@ -227,6 +295,7 @@ export const DEFAULT_CLIP_SETTINGS: ClipSettings = {
   subtitles: true,
   captionStyle: "pop",
   captionY: 0.7,
+  watermarks: [],
 };
 
 export const DEFAULT_THUMBNAIL: ClipThumbnail = {

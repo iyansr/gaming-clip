@@ -28,6 +28,7 @@ import {
   type PipelineOptions,
 } from "./core/pipeline";
 import { runSetup } from "./core/setup";
+import { generateSocial, resolveLanguage } from "./core/social";
 import {
   createProject,
   deleteProject,
@@ -39,10 +40,12 @@ import {
   ValidationError,
 } from "./core/store";
 import { DONATE_URL, SPONSOR_URL } from "./shared/project";
+import { postText, youtubeDescriptionText } from "./shared/social";
 import { THUMBNAIL_STYLES } from "./shared/thumbnail";
 import {
   STAGE_ORDER,
   type Clip,
+  type ClipSocial,
   type LoudnessEnvelope,
   type Project,
   type StageId,
@@ -77,7 +80,11 @@ const USAGE = `Usage: bun run clip <command> [options]
   clip clips select <id> <clipId,...|all|none>
   clip webcam <id> [--detect | --none | --rect x,y,w,h]
   clip settings <id> [--clips a,b|all] [--layout split|fill|fit|custom] [--custom-json <file>] [--subtitles on|off]
-                     [--style <id>] [--caption-y 0..1] [--focus-x 0..1]
+                     [--style <id>] [--caption-y 0..1] [--focus-x 0..1] [--watermarks-json <file> | --no-watermarks]
+                                               --watermarks-json sets the whole list (max 5, painted in order, under the captions): a JSON array of
+                                               {"id":"ab12","kind":"text","x","y" (centre, 1080x1920 px),"rotation":-180..180,"opacity":0..1,"onThumbnail":bool,
+                                               "text","font":"Anton|Bangers|Poppins ExtraBold|Poppins SemiBold","size":8..400,"color":"#rrggbb",
+                                               "stroke":0..40,"strokeColor":"#rrggbb"} or {...,"kind":"image","file":<uploaded name>,"width":16..2160}
                                                without --clips: project defaults only; all = every clip AND the defaults.
                                                --layout custom starts from the split layout as free elements; --custom-json
                                                sets the whole free-form layout (and --layout custom): {"background":
@@ -90,6 +97,10 @@ const USAGE = `Usage: bun run clip <command> [options]
                                                default: selected clips; makes their 1080x1920 cover images,
                                                prints the files. --no-text = no headline, --title-text = use the
                                                clip title, auto = pick the best frame. Styles: ${THUMBNAIL_STYLES.map((style) => style.id).join(", ")}
+  clip social <id> [--clips a,b|all] [--language xx]
+                                               write the Instagram, TikTok and YouTube Shorts post text (caption/title,
+                                               description, hashtags) for clips with the highlight AI and store it on
+                                               the clip; default: selected clips. Language: the transcript's, or a code like en, id
   clip rm <id>                                 delete the project and its files
   clip version                                 version, platform and where to support the project
 
@@ -689,6 +700,8 @@ const COMMANDS: Record<string, CommandSpec> = {
       style: "value",
       "caption-y": "value",
       "focus-x": "value",
+      "watermarks-json": "value",
+      "no-watermarks": "bool",
     },
     args: [1, 1],
     async run([id], flags) {
@@ -705,6 +718,12 @@ const COMMANDS: Record<string, CommandSpec> = {
       if (typeof flags.subtitles === "string") {
         if (flags.subtitles !== "on" && flags.subtitles !== "off") throw new UsageError("--subtitles needs on or off");
         raw.subtitles = flags.subtitles === "on";
+      }
+      if (typeof flags["watermarks-json"] === "string") {
+        if (flags["no-watermarks"]) throw new UsageError("--watermarks-json and --no-watermarks exclude each other");
+        raw.watermarks = await readJsonFile(flags["watermarks-json"]);
+      } else if (flags["no-watermarks"]) {
+        raw.watermarks = [];
       }
       const patch = asUsage(() => parseSettingsPatch(raw));
       let project = await getProject(id!);
@@ -729,7 +748,7 @@ const COMMANDS: Record<string, CommandSpec> = {
           s.layout === "custom" && s.custom
             ? `custom (${s.custom.background.kind} background${s.custom.game ? ", game" : ""}${s.custom.cam ? ", cam" : ""})`
             : s.layout;
-        return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}`;
+        return `${label} layout ${layout}, subtitles ${s.subtitles ? "on" : "off"}, style ${s.captionStyle}, captionY ${s.captionY}, focusX ${s.focusX}, watermarks ${s.watermarks.length}`;
       };
       console.log(line("defaults:", project.defaults));
       for (const clip of project.clips) console.log(line(`${clip.id}:`.padEnd(9), clip.settings));
@@ -811,6 +830,39 @@ const COMMANDS: Record<string, CommandSpec> = {
       }
       if (json) print(outputs);
       else for (const output of outputs) console.log(output.file);
+    },
+  },
+
+  social: {
+    flags: { clips: "value", language: "value" },
+    args: [1, 1],
+    async run([id], flags) {
+      let project = await getProject(id!);
+      const clipIds = parseClipList(typeof flags.clips === "string" ? flags.clips : undefined, project, "selected");
+      if (clipIds.length === 0)
+        throw new Error("No clips to write post text for: select some (clip clips select) or pass --clips");
+      for (const clipId of clipIds) {
+        if (!project.clips.some((clip) => clip.id === clipId)) throw new NotFoundError(`Clip not found: ${clipId}`);
+      }
+      const language = typeof flags.language === "string" ? flags.language : undefined;
+      asUsage(() => resolveLanguage(language, null));
+      const results: { clipId: string; title: string; social: ClipSocial }[] = [];
+      for (const clipId of clipIds) {
+        if (!json) process.stderr.write(`Writing post text for clip ${clipId}...\n`);
+        project = await generateSocial(project.id, clipId, { language }, abort.signal);
+        const clip = project.clips.find((candidate) => candidate.id === clipId);
+        if (!clip?.social) throw new Error(`The post text of clip ${clipId} was not stored: the clip was removed`);
+        results.push({ clipId, title: clip.title, social: clip.social });
+      }
+      if (json) return print(results);
+      for (const { clipId, title, social } of results) {
+        console.log(`=== Clip ${clipId}: ${title} (${social.language}) ===\n`);
+        console.log(`--- Instagram ---\n${postText(social.instagram)}\n`);
+        console.log(`--- TikTok ---\n${postText(social.tiktok)}\n`);
+        console.log(
+          `--- YouTube Shorts ---\nTitle: ${social.youtube.title}\n\n${youtubeDescriptionText(social.youtube)}\n`,
+        );
+      }
     },
   },
 

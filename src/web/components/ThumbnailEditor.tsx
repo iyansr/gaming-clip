@@ -10,6 +10,7 @@ import type { ClipEdit } from "../lib/hooks";
 import { useAssetImage } from "../lib/images";
 import type { Player } from "../lib/player";
 import { useToast } from "../lib/toast";
+import { drawableWatermarks, useWatermarkImages } from "../lib/watermarks";
 import { Badge, Button, inputClass, Panel } from "./ui";
 
 const MAX_HEADLINE = 120;
@@ -124,6 +125,9 @@ export function ThumbnailCanvas({
   const text = headlineOf(clip);
   const webcam = project.webcam.rect;
   const background = useAssetImage(project.id, backgroundFileOf(clip));
+  const wmImages = useWatermarkImages(project.id, clip.settings.watermarks);
+  const watermarks = clip.settings.watermarks;
+  const marks = useMemo(() => drawableWatermarks(watermarks, fontsReady), [watermarks, fontsReady]);
 
   useEffect(() => {
     const ctx = ref.current?.getContext("2d");
@@ -144,11 +148,12 @@ export function ThumbnailCanvas({
         textY,
         sourceSize,
         backgroundImage: backgroundOpt(background),
+        watermarks: { list: marks, images: wmImages },
         createCanvas,
       },
       OUTPUT_SIZE,
     );
-  }, [image, background, source, webcam, mode, focusX, custom, text, style, textY, fontsReady]);
+  }, [image, background, wmImages, source, webcam, mode, focusX, custom, marks, text, style, textY, fontsReady]);
 
   return (
     <>
@@ -207,6 +212,8 @@ function StyleTile({
   const webcam = project.webcam.rect;
   const { layout: mode, focusX, custom } = clip.settings;
   const text = headlineOf(clip) || "Your *headline*";
+  const watermarks = clip.settings.watermarks;
+  const wmImages = useWatermarkImages(project.id, watermarks);
 
   useEffect(() => {
     const ctx = ref.current?.getContext("2d");
@@ -220,10 +227,18 @@ function StyleTile({
       image,
       { width: image.naturalWidth, height: image.naturalHeight },
       computeLayout(sourceSize, webcam, { layout: mode, focusX, custom }, OUTPUT_SIZE),
-      { text, styleId, textY: 0.5, sourceSize, backgroundImage: backgroundOpt(background), createCanvas },
+      {
+        text,
+        styleId,
+        textY: 0.5,
+        sourceSize,
+        backgroundImage: backgroundOpt(background),
+        watermarks: { list: watermarks, images: wmImages },
+        createCanvas,
+      },
       TILE,
     );
-  }, [image, background, source, webcam, mode, focusX, custom, text, styleId, fontsReady]);
+  }, [image, background, wmImages, source, webcam, mode, focusX, custom, watermarks, text, styleId, fontsReady]);
 
   return (
     <button
