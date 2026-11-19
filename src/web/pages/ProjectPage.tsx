@@ -1,4 +1,4 @@
-import { Download, Film, Loader2, Play } from "lucide-react";
+import { Download, Film, FolderOpen, Loader2, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Clip, Project } from "../../shared/types";
@@ -15,7 +15,7 @@ import { Empty } from "../components/ui";
 import { WebcamEditor } from "../components/WebcamEditor";
 import { api, media } from "../lib/api";
 import type { CustomUi } from "../lib/custom";
-import { clamp, cn, floor1, fmtTime } from "../lib/format";
+import { clamp, cn, FILE_MANAGER, floor1, fmtTime } from "../lib/format";
 import { useCaptionFonts, useClipEdits, useProjectStream, useTranscriptWords } from "../lib/hooks";
 import { Player } from "../lib/player";
 import { Link } from "../lib/router";
@@ -160,6 +160,24 @@ function ProjectView({
     discard(clip.id);
     try {
       applyProject(await api.deleteClip(project.id, clip.id));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+
+  const renderOne = async (clipId: string) => {
+    try {
+      // Pending edits first, so the render uses what the editor shows.
+      await flushAll();
+      applyProject(await api.render(project.id, [clipId]));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+
+  const reveal = async (clipId: string | null) => {
+    try {
+      await (clipId ? api.revealClip(project.id, clipId) : api.revealOutputs(project.id));
     } catch (e) {
       toast.error(e);
     }
@@ -339,6 +357,9 @@ function ProjectView({
                     for (const c of clips) if (c.selected !== selected) edit(c.id, { selected }, true);
                   }}
                   onAdd={() => void addClip()}
+                  onRender={(clipId) => void renderOne(clipId)}
+                  onReveal={(clipId) => void reveal(clipId)}
+                  canRender={project.stages.download.status === "done"}
                 />
               ) : (
                 <RenderedGallery
@@ -348,6 +369,7 @@ function ProjectView({
                     setActiveId(clip.id);
                     setView({ clipId: clip.id, mode: "rendered" });
                   }}
+                  onReveal={(clipId) => void reveal(clipId)}
                 />
               )}
             </section>
@@ -416,57 +438,79 @@ function RenderedGallery({
   project,
   clips,
   onPlay,
+  onReveal,
 }: {
   project: Project;
   clips: Clip[];
   onPlay: (clip: Clip) => void;
+  /** A clip id shows its file; null opens the output folder. */
+  onReveal: (clipId: string | null) => void;
 }) {
   if (clips.length === 0) return <Empty>Finished shorts appear here.</Empty>;
   return (
-    <ul
-      className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] items-start gap-2 p-3"
-      aria-label="Rendered shorts"
-    >
-      {clips.map((clip) => (
-        <li key={clip.id} className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5">
-          {clip.thumbnail.file && (
-            <a
-              href={media.clip(project.id, clip.thumbnail.file, true)}
-              download
-              title="Download the thumbnail"
-              className="block"
-            >
-              <img
-                src={media.thumbnailFile(project.id, clip.thumbnail.file, clip.thumbnail.generatedAt)}
-                alt={`Thumbnail of ${clip.title}`}
-                loading="lazy"
-                className="aspect-[9/16] w-24 rounded border border-zinc-800 bg-zinc-950 object-cover"
-              />
-            </a>
-          )}
-          <span className="line-clamp-2 text-sm font-medium">{clip.title}</span>
-          <span className="text-xs text-zinc-400 tabular-nums">
-            {fmtTime(clip.start)} - {fmtTime(clip.end)} · {(clip.end - clip.start).toFixed(0)}s
-            {clip.render.renderedAt && ` · ${new Date(clip.render.renderedAt).toLocaleTimeString()}`}
-          </span>
-          <span className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => onPlay(clip)}
-              className="inline-flex h-7 items-center gap-1.5 rounded-md bg-indigo-600 px-2 text-xs font-medium text-white hover:bg-indigo-500"
-            >
-              <Play className="size-3.5" aria-hidden /> Play
-            </button>
-            <a
-              href={media.clip(project.id, clip.render.file!, true)}
-              download
-              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium hover:bg-zinc-700"
-            >
-              <Download className="size-3.5" aria-hidden /> Download
-            </a>
-          </span>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col">
+      <div className="flex items-center justify-end border-b border-zinc-800 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => onReveal(null)}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium hover:bg-zinc-700"
+        >
+          <FolderOpen className="size-3.5" aria-hidden /> Open output folder
+        </button>
+      </div>
+      <ul
+        className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] items-start gap-2 p-3"
+        aria-label="Rendered shorts"
+      >
+        {clips.map((clip) => (
+          <li key={clip.id} className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-900 p-2.5">
+            {clip.thumbnail.file && (
+              <a
+                href={media.clip(project.id, clip.thumbnail.file, true)}
+                download
+                title="Download the thumbnail"
+                className="block"
+              >
+                <img
+                  src={media.thumbnailFile(project.id, clip.thumbnail.file, clip.thumbnail.generatedAt)}
+                  alt={`Thumbnail of ${clip.title}`}
+                  loading="lazy"
+                  className="aspect-[9/16] w-24 rounded border border-zinc-800 bg-zinc-950 object-cover"
+                />
+              </a>
+            )}
+            <span className="line-clamp-2 text-sm font-medium">{clip.title}</span>
+            <span className="text-xs text-zinc-400 tabular-nums">
+              {fmtTime(clip.start)} - {fmtTime(clip.end)} · {(clip.end - clip.start).toFixed(0)}s
+              {clip.render.renderedAt && ` · ${new Date(clip.render.renderedAt).toLocaleTimeString()}`}
+            </span>
+            <span className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onPlay(clip)}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-indigo-600 px-2 text-xs font-medium text-white hover:bg-indigo-500"
+              >
+                <Play className="size-3.5" aria-hidden /> Play
+              </button>
+              <a
+                href={media.clip(project.id, clip.render.file!, true)}
+                download
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium hover:bg-zinc-700"
+              >
+                <Download className="size-3.5" aria-hidden /> Download
+              </a>
+              <button
+                type="button"
+                onClick={() => onReveal(clip.id)}
+                title={`Show the video file in ${FILE_MANAGER}`}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-2 text-xs font-medium hover:bg-zinc-700"
+              >
+                <FolderOpen className="size-3.5" aria-hidden /> {FILE_MANAGER}
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

@@ -112,6 +112,10 @@ export const api = {
   autoEdit: (id: string, clipId: string, replace: boolean) =>
     request<Project>("POST", `${projectUrl(id)}/clips/${clipId}/autoedit`, { replace }),
   cancelRender: (id: string) => request<Project>("POST", `${projectUrl(id)}/render/cancel`, {}),
+  /** Shows the rendered video selected in Finder / Explorer on the computer running the server. */
+  revealClip: (id: string, clipId: string) => request<void>("POST", `${projectUrl(id)}/clips/${clipId}/reveal`, {}),
+  /** Opens the project's output folder in Finder / Explorer. */
+  revealOutputs: (id: string) => request<void>("POST", `${projectUrl(id)}/reveal`, {}),
   library: () => request<LibraryItem[]>("GET", "/api/library"),
   renameLibraryItem: (file: string, name: string) =>
     request<LibraryItem>("PATCH", `/api/library/${encodeURIComponent(file)}`, { name }),

@@ -1,4 +1,4 @@
-import { rename, stat } from "node:fs/promises";
+import { mkdir, rename, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { generateEdit } from "../core/autoedit";
@@ -32,6 +32,7 @@ import {
   removeClip,
   thumbnailCandidates,
 } from "../core/pipeline";
+import { revealInFileManager } from "../core/reveal";
 import { llmConfigured, publicSettings, updateSettings } from "../core/settings";
 import { generateSocial } from "../core/social";
 import {
@@ -56,6 +57,7 @@ const EVENT_HEARTBEAT_MS = 15_000;
 
 function errorResponse(error: unknown): Response {
   if (error instanceof NotFoundError) return Response.json({ error: error.message }, { status: 404 });
+  if (error instanceof ForbiddenError) return Response.json({ error: error.message }, { status: 403 });
   if (error instanceof ValidationError) return Response.json({ error: error.message }, { status: 400 });
   if (error instanceof ConflictError) return Response.json({ error: error.message }, { status: 409 });
   if (error instanceof PayloadTooLargeError) return Response.json({ error: error.message }, { status: 413 });
@@ -121,6 +123,18 @@ async function api(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+class ForbiddenError extends Error {}
+
+/**
+ * Opening Finder/Explorer happens on the machine running the server. With `HOST=0.0.0.0` other devices on the network
+ * can reach the UI, and they must not pop windows on this one.
+ */
+function requireLocalUser(req: Request, srv: Bun.Server<undefined>): void {
+  const address = srv.requestIP(req)?.address ?? "";
+  const local = address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+  if (!local) throw new ForbiddenError("Opening the file manager only works on the computer running gaming-clip");
 }
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
@@ -524,6 +538,32 @@ export async function startServer(port: number = PORT): Promise<Bun.Server<undef
             return Response.json(
               await generateSocial(req.params.id, req.params.clipId, { language: body.language }, req.signal),
             );
+          }),
+      },
+
+      "/api/projects/:id/clips/:clipId/reveal": {
+        POST: (req, srv) =>
+          api(req, async () => {
+            requireLocalUser(req, srv);
+            const project = await getProject(req.params.id);
+            const clip = project.clips.find((candidate) => candidate.id === req.params.clipId);
+            if (!clip) throw new NotFoundError(`Clip not found: ${req.params.clipId}`);
+            if (clip.render.status !== "done" || !clip.render.file)
+              throw new ConflictError("Render the clip first: there is no video file yet");
+            await revealInFileManager(join(projectPaths(project.id).clipsDir, basename(clip.render.file)));
+            return new Response(null, { status: 204 });
+          }),
+      },
+
+      "/api/projects/:id/reveal": {
+        POST: (req, srv) =>
+          api(req, async () => {
+            requireLocalUser(req, srv);
+            await getProject(req.params.id);
+            const { clipsDir } = projectPaths(req.params.id);
+            await mkdir(clipsDir, { recursive: true });
+            await revealInFileManager(clipsDir);
+            return new Response(null, { status: 204 });
           }),
       },
 

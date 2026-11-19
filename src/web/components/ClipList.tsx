@@ -1,7 +1,7 @@
-import { AlertCircle, CheckCircle2, Captions, ImageIcon, Loader2, Plus } from "lucide-react";
+import { AlertCircle, CheckCircle2, Captions, Clapperboard, FolderOpen, ImageIcon, Loader2, Plus } from "lucide-react";
 
 import type { Clip, ClipSource, Project } from "../../shared/types";
-import { cn, fmtTime } from "../lib/format";
+import { cn, FILE_MANAGER, fmtTime } from "../lib/format";
 import { Badge, Button, Empty, ProgressBar } from "./ui";
 
 export type ClipSort = "time" | "score";
@@ -16,6 +16,12 @@ interface Props {
   onSelect: (id: string, selected: boolean) => void;
   onSelectAll: (selected: boolean) => void;
   onAdd: () => void;
+  /** Queues this one clip (again, when it is already rendered). */
+  onRender: (id: string) => void;
+  /** Shows the rendered file in Finder / Explorer. */
+  onReveal: (id: string) => void;
+  /** False until the source video is downloaded. */
+  canRender: boolean;
 }
 
 const SOURCE_LABEL: Record<ClipSource, string> = {
@@ -39,6 +45,9 @@ export function ClipList({
   onSelect,
   onSelectAll,
   onAdd,
+  onRender,
+  onReveal,
+  canRender,
 }: Props) {
   const sorted = sortClips(clips, sort);
   const selectedCount = clips.filter((c) => c.selected).length;
@@ -108,6 +117,8 @@ export function ClipList({
               active={clip.id === activeId}
               onActivate={() => onActivate(clip.id)}
               onSelect={(v) => onSelect(clip.id, v)}
+              onRender={canRender ? () => onRender(clip.id) : null}
+              onReveal={() => onReveal(clip.id)}
             />
           ))}
         </ul>
@@ -121,13 +132,18 @@ function ClipCard({
   active,
   onActivate,
   onSelect,
+  onRender,
+  onReveal,
 }: {
   clip: Clip;
   active: boolean;
   onActivate: () => void;
   onSelect: (v: boolean) => void;
+  onRender: (() => void) | null;
+  onReveal: () => void;
 }) {
   const r = clip.render;
+  const busy = r.status === "queued" || r.status === "rendering";
   return (
     <li
       className={cn(
@@ -199,6 +215,23 @@ function ClipCard({
           </span>
         )}
       </button>
+      {/* Outside the card button: buttons cannot nest. */}
+      <div className="flex flex-wrap gap-1.5 px-2.5 pb-2 pl-9">
+        <Button
+          small
+          variant="secondary"
+          onClick={onRender ?? undefined}
+          disabled={!onRender || busy}
+          title={r.status === "done" ? "Render this clip again with its current settings" : "Render only this clip"}
+        >
+          <Clapperboard className="size-3.5" aria-hidden /> {r.status === "done" ? "Re-render" : "Render"}
+        </Button>
+        {r.status === "done" && (
+          <Button small variant="secondary" onClick={onReveal} title={`Show the video file in ${FILE_MANAGER}`}>
+            <FolderOpen className="size-3.5" aria-hidden /> Show in {FILE_MANAGER}
+          </Button>
+        )}
+      </div>
     </li>
   );
 }

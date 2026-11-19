@@ -41,6 +41,13 @@ export const floor1 = (n: number) => Math.floor(n * 10 + 1e-6) / 10;
 export const round2 = (n: number) => Math.round(n * 100) / 100;
 export const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
+/** Name of the system file manager, for "Show in ..." buttons. */
+export const FILE_MANAGER = /Mac|iPhone|iPad/.test(navigator.userAgent)
+  ? "Finder"
+  : /Windows/.test(navigator.userAgent)
+    ? "Explorer"
+    : "folder";
+
 export function cn(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(" ");
 }
