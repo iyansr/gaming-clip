@@ -240,6 +240,8 @@ The web editor drives the same operations over HTTP; errors come back as `{error
 | `GET /media/library/:file`                      | The file itself (Range supported)                                                                                                           |
 | `PATCH /api/projects/:id/clips/:clipId`         | Accepts `timeline` (whole `ClipTimeline`) and `settings.intro`/`settings.outro`; a timeline change invalidates the render but not the cover |
 | `POST /api/projects/:id/clips/:clipId/autoedit` | `{replace?: boolean}` -> the edited project (AI edit)                                                                                       |
+| `POST /api/projects/:id/clips/:clipId/reveal`   | Shows the rendered video selected in Finder / Explorer (Linux: opens its folder). Local requests only; 409 before the clip is rendered      |
+| `POST /api/projects/:id/reveal`                 | Opens the project's output folder in the file manager. Local requests only                                                                  |
 
 ### Worked examples
 
